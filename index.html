@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+  <title>出行成本优化</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%23fafafa' width='100' height='100' rx='22'/><text y='70' x='50' text-anchor='middle' font-size='58'>🚕</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+
+  <script>
+    // Apply theme before paint to prevent FOUC
+    (function () {
+      try {
+        var saved = localStorage.getItem('theme');
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (saved === 'dark' || (!saved && prefersDark)) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) {}
+    })();
+  </script>
+
+  <script type="text/javascript">
+    window._AMapSecurityConfig = {
+      securityJsCode: "ea100378695f065636600fb256a3670e",
+    };
+  </script>
+  <script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=0d6897af1d905d14d1dc553850ee051f&plugin=AMap.Transfer,AMap.Walking,AMap.PlaceSearch,AMap.Riding"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark"><i data-lucide="car-front"></i></span>
+        <h1 class="brand-title">出行成本优化</h1>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="切换主题" title="切换主题">
+        <i data-lucide="moon" class="icon-moon"></i>
+        <i data-lucide="sun" class="icon-sun"></i>
+      </button>
+      <button class="settings-btn" id="settings-btn" aria-label="设置" title="设置">
+        <i data-lucide="settings"></i>
+      </button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="search-section">
+      <div class="input-card">
+        <div class="input-row">
+          <span class="dot dot-start" aria-hidden="true"></span>
+          <div class="input-wrapper">
+            <input type="text" id="start-input" placeholder="选择起点" autocomplete="off">
+            <button class="input-action" id="gps-btn" title="使用当前位置" aria-label="使用当前位置">
+              <i data-lucide="locate"></i>
+            </button>
+            <div class="autocomplete-dropdown" id="start-dropdown"></div>
+          </div>
+        </div>
+        <div class="input-divider"></div>
+        <div class="input-row">
+          <span class="dot dot-end" aria-hidden="true"></span>
+          <div class="input-wrapper">
+            <input type="text" id="end-input" placeholder="选择终点" autocomplete="off">
+            <div class="autocomplete-dropdown" id="end-dropdown"></div>
+          </div>
+        </div>
+        <button class="swap-btn" id="swap-btn" aria-label="交换起点和终点" title="交换起终点">
+          <i data-lucide="arrow-up-down"></i>
+        </button>
+      </div>
+
+      <div class="toolbar">
+        <div class="passenger-selector">
+          <i data-lucide="users"></i>
+          <span class="passenger-label">乘客</span>
+          <button class="step-btn" id="passenger-minus" aria-label="减少乘客">
+            <i data-lucide="minus"></i>
+          </button>
+          <span class="passenger-count" id="passenger-count">1</span>
+          <button class="step-btn" id="passenger-plus" aria-label="增加乘客">
+            <i data-lucide="plus"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="mode-switch" role="tablist" aria-label="排序模式">
+        <button class="mode-option" data-mode="cheapest" role="tab" aria-selected="false">
+          <i data-lucide="piggy-bank"></i>
+          <span>经济</span>
+        </button>
+        <button class="mode-option is-active" data-mode="balanced" role="tab" aria-selected="true">
+          <i data-lucide="scale"></i>
+          <span>综合</span>
+        </button>
+        <button class="mode-option" data-mode="comfortable" role="tab" aria-selected="false">
+          <i data-lucide="armchair"></i>
+          <span>舒适</span>
+        </button>
+        <button class="mode-option" data-mode="fastest" role="tab" aria-selected="false">
+          <i data-lucide="zap"></i>
+          <span>时间</span>
+        </button>
+      </div>
+
+      <button class="search-btn" id="search-btn">
+        <i data-lucide="sparkles" class="btn-icon"></i>
+        <span class="btn-text">查询最优方案</span>
+        <span class="btn-loading" hidden>
+          <span class="btn-spinner"></span>
+          <span>查询中</span>
+        </span>
+      </button>
+
+      <p class="input-hint">
+        <i data-lucide="info"></i>
+        <span>输入地址后从下拉列表选择准确地点</span>
+      </p>
+    </section>
+
+    <section class="map-section">
+      <div id="map-container"></div>
+    </section>
+
+    <section class="results-section" id="results-section">
+      <div class="results-header">
+        <h2 class="section-title">
+          <i data-lucide="route"></i>
+          <span>推荐路线</span>
+        </h2>
+        <span class="results-hint">按综合成本排序</span>
+      </div>
+      <div id="results-list" class="results-list">
+        <div class="empty-state">
+          <div class="empty-icon"><i data-lucide="map"></i></div>
+          <p class="empty-title">输入起终点开始查询</p>
+          <p class="empty-hint">我们会自动为你计算最省钱的出行组合</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-settings></div>
+    <div class="modal-content modal-content-settings">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button class="icon-btn" data-close-settings aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <i data-lucide="car-taxi-front"></i>
+            <div>
+              <div class="settings-section-title">滴滴估价 API</div>
+              <div class="settings-section-hint">覆盖小程序抓包参数；留空字段继续使用服务端环境变量或内置默认值</div>
+            </div>
+            <span class="settings-status" id="didi-status">使用默认</span>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">接口地址</span>
+            <input id="cfg-didi-endpoint" type="url" autocomplete="off" spellcheck="false">
+            <span class="settings-hint">仅允许 <code>https://*.udache.com</code> 或 <code>https://*.didichuxing.com</code></span>
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">粘贴抓包原文</span>
+            <textarea id="cfg-didi-raw" class="settings-raw-capture" rows="10" spellcheck="false" autocomplete="off" placeholder="粘贴请求头、空行和 application/x-www-form-urlencoded 请求体"></textarea>
+            <span class="settings-hint">解析后自动忽略坐标、地点、搜索 ID、Host、Content-Length 等动态字段</span>
+          </label>
+          <button class="settings-test-btn" id="cfg-parse-didi" type="button">
+            <i data-lucide="scan-text"></i>
+            <span>解析并填入下方参数</span>
+          </button>
+          <label class="settings-field">
+            <span class="settings-label">请求头参数（JSON）</span>
+            <textarea id="cfg-didi-headers" rows="7" spellcheck="false" placeholder='{"wsgsig":"...","secdd-authentication":"..."}'></textarea>
+            <span class="settings-hint">可修改 <code>wsgsig</code>、<code>secdd-authentication</code>、<code>User-Agent</code>、<code>Referer</code> 等；Host 和 Content-Length 自动生成</span>
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">请求体参数（JSON）</span>
+            <textarea id="cfg-didi-body" rows="9" spellcheck="false" placeholder='{"token":"...","ddfp":"...","sec_session_id":"..."}'></textarea>
+            <span class="settings-hint">可覆盖抓包中的固定参数；坐标、地点名称和搜索 ID 由每次查询自动填写</span>
+          </label>
+          <button class="settings-test-btn" id="cfg-test-didi" type="button">
+            <i data-lucide="plug-zap"></i>
+            <span>测试当前参数</span>
+          </button>
+          <div class="settings-test-result" id="didi-test-result" role="status"></div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <i data-lucide="map-pin"></i>
+            <div>
+              <div class="settings-section-title">路线与本地估价</div>
+              <div class="settings-section-hint">公交路线使用高德；滴滴不可用时按城市出租车规则估算</div>
+            </div>
+          </div>
+          <label class="settings-field">
+            <span class="settings-label">出发城市</span>
+            <select id="cfg-city">
+              <option value="北京">北京</option>
+              <option value="上海">上海</option>
+              <option value="广州">广州</option>
+              <option value="深圳">深圳</option>
+              <option value="杭州">杭州</option>
+              <option value="成都">成都</option>
+            </select>
+            <span class="settings-hint">高德不可用时，才用该城市的本地计价规则兜底</span>
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <i data-lucide="info"></i>
+            <div>
+              <div class="settings-section-title">参数存储</div>
+              <div class="settings-section-hint">自定义参数只保存在当前浏览器。滴滴报价按参数和起终点缓存 15 分钟，保存设置后立即清空旧缓存。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-footer">
+          <button class="settings-save-btn" id="cfg-save">
+            <i data-lucide="check"></i>
+            <span>保存设置</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="route-detail-modal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>路线详情</h3>
+        <button class="icon-btn" id="close-modal" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
