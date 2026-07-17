@@ -1313,30 +1313,23 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
 
   const segments = plan.segments || [];
 
-  // 累加到该站点的公交费用
-  let transitCost = 0;
+  // 公交费用：用 AMap plan.cost 按距离比例折算（lines[0].price 在 JS SDK 中不可靠）
+  const transitCost = Math.max((plan.cost || 0) * station.ratio, 2);
   const transitLegs = [];
   for (let i = 0; i <= station.segmentIndex; i++) {
     const s = segments[i];
     if (s.transit_mode === 'SUBWAY' || s.transit_mode === 'BUS') {
       const lines = (s.transit && s.transit.lines) || [];
-      const price = lines[0] && lines[0].price ? lines[0].price : 2;
       const onStation = (s.transit && s.transit.on_station && s.transit.on_station.name) || '';
       const offStation = (s.transit && s.transit.off_station && s.transit.off_station.name) || '';
-      transitCost += price;
       transitLegs.push({
         mode: s.transit_mode,
         lineName: (lines[0] && lines[0].name) || (s.transit_mode === 'SUBWAY' ? '地铁' : '公交'),
-        price,
+        price: 0, // 不再逐段显示价格，总价由 transitCost 体现
         fromStation: onStation,
         toStation: offStation,
       });
     }
-  }
-  // 用 plan.cost 作为下限防止兜底 2 元严重低估（如市域机场线实际 20+ 元）
-  const planCostFloor = (plan.cost || 0) * station.ratio;
-  if (planCostFloor > transitCost) {
-    transitCost = planCostFloor;
   }
 
   const taxiDistance = calculateDistance(
