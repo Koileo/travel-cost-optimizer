@@ -3,7 +3,7 @@
     {
       "src": "app.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": "**" }
+      "config": { "includeFiles": "**", "maxDuration": 30 }
     }
   ],
   "routes": [

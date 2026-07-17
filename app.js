@@ -129,7 +129,8 @@ function didiEstimate(req, res) {
     if (!ps.get('token') || !hdrs['wsgsig']) { res.writeHead(503); return res.end(JSON.stringify({ error: '缺少 token/wsgsig' })); }
     const data = ps.toString(); hdrs['content-length'] = Buffer.byteLength(data);
 
-    const pr = http.request({ hostname: t.hostname, port: 443, path: t.pathname + t.search, method: 'POST', headers: hdrs }, proxyRes => {
+    const DIDI_TIMEOUT_MS = 8000; // 8 秒超时，留 2 秒给 Vercel 做清理
+    const pr = http.request({ hostname: t.hostname, port: 443, path: t.pathname + t.search, method: 'POST', headers: hdrs, timeout: DIDI_TIMEOUT_MS }, proxyRes => {
       let stream = proxyRes;
       const enc = proxyRes.headers['content-encoding'];
       if (enc === 'gzip') stream = proxyRes.pipe(zlib.createGunzip());
@@ -141,7 +142,8 @@ function didiEstimate(req, res) {
         res.end(Buffer.concat(chunks));
       });
     });
-    pr.on('error', e => { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); });
+    pr.on('timeout', () => { pr.destroy(); res.writeHead(504); res.end(JSON.stringify({ error: '滴滴接口响应超时，请稍后重试' })); });
+    pr.on('error', e => { if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); } });
     pr.write(data); pr.end();
   });
 }

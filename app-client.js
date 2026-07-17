@@ -2930,76 +2930,91 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
     console.info('[滴滴估价请求]', { from, to });
 
     const cityId = DIDI_CITY_ID_MAP[appSettings.city] || 1;
+    const maxRetries = 2;
+    let lastError = null;
 
-    const response = await fetch('/didi-estimate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from_lat: from[1],
-        from_lng: from[0],
-        from_name: tripMeta.fromName || startPOI?.name || '',
-        from_address: tripMeta.fromAddress || startPOI?.address || '',
-        to_lat: to[1],
-        to_lng: to[0],
-        to_name: tripMeta.toName || endPOI?.name || '',
-        to_address: tripMeta.toAddress || endPOI?.address || '',
-        city_id: cityId,
-        didi_config: {
-          endpoint: appSettings.didiEndpoint,
-          headers: appSettings.didiHeaders,
-          body: appSettings.didiBody,
-        },
-      }),
-    });
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        const delay = attempt * 1200 + Math.random() * 800;
+        console.info(`[滴滴估价] 第 ${attempt} 次重试，等待 ${Math.round(delay)}ms…`);
+        await new Promise(r => setTimeout(r, delay));
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[滴滴估价失败]', { status: response.status, body: errorText });
-      let message = '';
-      try {
-        message = JSON.parse(errorText).error || '';
-      } catch (err) {}
-      throw new Error(message || `滴滴估价服务异常（HTTP ${response.status}）`);
+      const response = await fetch('/didi-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_lat: from[1],
+          from_lng: from[0],
+          from_name: tripMeta.fromName || startPOI?.name || '',
+          from_address: tripMeta.fromAddress || startPOI?.address || '',
+          to_lat: to[1],
+          to_lng: to[0],
+          to_name: tripMeta.toName || endPOI?.name || '',
+          to_address: tripMeta.toAddress || endPOI?.address || '',
+          city_id: cityId,
+          didi_config: {
+            endpoint: appSettings.didiEndpoint,
+            headers: appSettings.didiHeaders,
+            body: appSettings.didiBody,
+          },
+        }),
+      });
+
+      // 502/504 可重试，其他错误直接抛出
+      if (!response.ok) {
+        const retryable = response.status === 502 || response.status === 504;
+        lastError = new Error(
+          retryable
+            ? `滴滴估价服务暂不可用（HTTP ${response.status}），正在重试…`
+            : `滴滴估价服务异常（HTTP ${response.status}）`
+        );
+        console.error('[滴滴估价失败]', { status: response.status, retryable, attempt });
+        if (retryable && attempt < maxRetries) continue;
+        throw lastError;
+      }
+
+      const data = await response.json();
+      console.info('[滴滴估价响应]', data);
+
+      // 检查业务层错误
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      if (data.errno !== undefined && Number(data.errno) !== 0) {
+        throw new Error(data.errmsg || `滴滴接口错误（errno=${data.errno}）`);
+      }
+
+      const parsed = parseDidiEstimateResponse(data);
+      if (!parsed) {
+        console.warn('[滴滴估价] 无法解析响应，原始数据:', JSON.stringify(data).slice(0, 500));
+        // 检查是否是凭证过期的典型症状
+        const respData = data.data;
+        const allEmpty = respData &&
+          (!respData.estimate_data || Object.keys(respData.estimate_data).length === 0) &&
+          (!Array.isArray(respData.layout) || respData.layout.length === 0) &&
+          (!Array.isArray(respData.rec_layout) || respData.rec_layout.length === 0);
+        // 滴滴有时会通过 toast_tip 返回提示（如"当前城市暂未开通服务"）
+        const tip = (respData && respData.toast_tip) ? ` (${respData.toast_tip})` : '';
+        throw new Error(
+          allEmpty
+            ? `滴滴会话凭证可能已过期，请在设置中重新抓包更新 token/wsgsig${tip}`
+            : `滴滴返回无法解析的价格数据${tip}`
+        );
+      }
+
+      const value = {
+        cost: parsed.price,
+        source: 'didi',
+        carType: parsed.carType,
+        allOptions: parsed.allOptions,
+        raw: null,
+      };
+      _didiEstimateCache.set(cacheKey, { value, expiresAt: Date.now() + DIDI_ESTIMATE_CACHE_TTL_MS });
+      return value;
     }
-
-    const data = await response.json();
-    console.info('[滴滴估价响应]', data);
-
-    // 检查业务层错误
-    if (data.error) {
-      throw new Error(data.error);
-    }
-    if (data.errno !== undefined && Number(data.errno) !== 0) {
-      throw new Error(data.errmsg || `滴滴接口错误（errno=${data.errno}）`);
-    }
-
-    const parsed = parseDidiEstimateResponse(data);
-    if (!parsed) {
-      console.warn('[滴滴估价] 无法解析响应，原始数据:', JSON.stringify(data).slice(0, 500));
-      // 检查是否是凭证过期的典型症状
-      const respData = data.data;
-      const allEmpty = respData &&
-        (!respData.estimate_data || Object.keys(respData.estimate_data).length === 0) &&
-        (!Array.isArray(respData.layout) || respData.layout.length === 0) &&
-        (!Array.isArray(respData.rec_layout) || respData.rec_layout.length === 0);
-      // 滴滴有时会通过 toast_tip 返回提示（如"当前城市暂未开通服务"）
-      const tip = (respData && respData.toast_tip) ? ` (${respData.toast_tip})` : '';
-      throw new Error(
-        allEmpty
-          ? `滴滴会话凭证可能已过期，请在设置中重新抓包更新 token/wsgsig${tip}`
-          : `滴滴返回无法解析的价格数据${tip}`
-      );
-    }
-
-    const value = {
-      cost: parsed.price,
-      source: 'didi',
-      carType: parsed.carType,
-      allOptions: parsed.allOptions,
-      raw: null,
-    };
-    _didiEstimateCache.set(cacheKey, { value, expiresAt: Date.now() + DIDI_ESTIMATE_CACHE_TTL_MS });
-    return value;
+    // 所有重试都失败
+    throw lastError;
   })();
 
   _didiEstimateInFlight.set(cacheKey, request);
