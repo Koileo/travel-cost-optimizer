@@ -2800,7 +2800,16 @@ function parseDidiEstimateResponse(data) {
     allOptions = extractFromEstimateData(respData.estimate_data);
   }
 
-  if (allOptions.length === 0) return null;
+  if (allOptions.length === 0) {
+    // 诊断：errno=0 但所有数据源为空，大概率是凭证过期
+    const estEmpty = !respData.estimate_data || (typeof respData.estimate_data === 'object' && Object.keys(respData.estimate_data).length === 0);
+    const layoutEmpty = !Array.isArray(respData.layout) || respData.layout.length === 0;
+    const recEmpty = !Array.isArray(respData.rec_layout) || respData.rec_layout.length === 0;
+    if (estEmpty && layoutEmpty && recEmpty) {
+      console.warn('[滴滴估价] errno=0 但 estimate_data/layout/rec_layout 全部为空，大概率是 token/wsgsig 过期，请重新抓包更新凭证');
+    }
+    return null;
+  }
 
   // 按价格升序排列
   allOptions.sort((a, b) => a.price - b.price);
@@ -2887,7 +2896,19 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
     const parsed = parseDidiEstimateResponse(data);
     if (!parsed) {
       console.warn('[滴滴估价] 无法解析响应，原始数据:', JSON.stringify(data).slice(0, 500));
-      throw new Error('滴滴返回无法解析的价格数据');
+      // 检查是否是凭证过期的典型症状
+      const respData = data.data;
+      const allEmpty = respData &&
+        (!respData.estimate_data || Object.keys(respData.estimate_data).length === 0) &&
+        (!Array.isArray(respData.layout) || respData.layout.length === 0) &&
+        (!Array.isArray(respData.rec_layout) || respData.rec_layout.length === 0);
+      // 滴滴有时会通过 toast_tip 返回提示（如"当前城市暂未开通服务"）
+      const tip = (respData && respData.toast_tip) ? ` (${respData.toast_tip})` : '';
+      throw new Error(
+        allEmpty
+          ? `滴滴会话凭证可能已过期，请在设置中重新抓包更新 token/wsgsig${tip}`
+          : `滴滴返回无法解析的价格数据${tip}`
+      );
     }
 
     const value = {
