@@ -1,0 +1,7 @@
+{
+  "name": "travel-cost-optimizer",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js"
+  }
+}

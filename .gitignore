@@ -1,4 +1,7 @@
-
+.env
+.env*
+env_*
 .DS_Store
 .claude/
 node_modules/
+server.js
