@@ -152,7 +152,6 @@ function initMap() {
   // 等地图完全初始化后再创建 Transfer，避免 SDK 内部状态未就绪
   map.on('complete', () => {
     transfer = new AMap.Transfer({
-      map: map,
       city: city,
       panel: null,
       outlineColor: '#1A73E8'
