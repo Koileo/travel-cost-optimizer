@@ -1,6 +1,12 @@
 {
-  "rewrites": [
-    { "source": "/didi-estimate", "destination": "/api/didi-estimate" },
-    { "source": "/amap-driving", "destination": "/api/amap-driving" }
+  "builds": [
+    {
+      "src": "app.js",
+      "use": "@vercel/node",
+      "config": { "includeFiles": "**" }
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "app.js" }
   ]
 }
