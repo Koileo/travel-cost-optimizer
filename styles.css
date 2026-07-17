@@ -1676,6 +1676,11 @@ body {
   transform: none;
 }
 
+.settings-import-export {
+  display: flex;
+  gap: 8px;
+}
+
 .settings-test-result {
   font-size: 12px;
   line-height: 1.5;

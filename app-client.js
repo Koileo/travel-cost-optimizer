@@ -2979,6 +2979,12 @@ const cfgDidiHeaders = document.getElementById('cfg-didi-headers');
 const cfgDidiBody = document.getElementById('cfg-didi-body');
 const cfgTestDidi = document.getElementById('cfg-test-didi');
 const cfgSaveBtn = document.getElementById('cfg-save');
+const cfgExport = document.getElementById('cfg-export');
+const cfgImportBtn = document.getElementById('cfg-import-btn');
+const cfgImportArea = document.getElementById('cfg-import-area');
+const cfgImportText = document.getElementById('cfg-import-text');
+const cfgImportConfirm = document.getElementById('cfg-import-confirm');
+const cfgImportCancel = document.getElementById('cfg-import-cancel');
 const didiStatus = document.getElementById('didi-status');
 const didiTestResult = document.getElementById('didi-test-result');
 
@@ -3207,6 +3213,90 @@ if (cfgTestDidi) {
       appSettings = prevSettings;
       cfgTestDidi.disabled = false;
     }
+  });
+}
+
+// 导出设置（复制到剪贴板）
+if (cfgExport) {
+  cfgExport.addEventListener('click', async () => {
+    const exportData = {
+      city: appSettings.city,
+      didiEndpoint: appSettings.didiEndpoint,
+      didiHeaders: appSettings.didiHeaders,
+      didiBody: appSettings.didiBody,
+      _version: 1,
+      _exported: new Date().toISOString(),
+    };
+    try {
+      const json = JSON.stringify(exportData, null, 2);
+      await navigator.clipboard.writeText(json);
+      didiTestResult.className = 'settings-test-result show is-success';
+      didiTestResult.textContent = '设置已复制到剪贴板，可在其他设备粘贴导入';
+    } catch (err) {
+      // 剪贴板不可用时回退到选中文本
+      didiTestResult.className = 'settings-test-result show';
+      didiTestResult.textContent = '复制失败，请手动复制下方 JSON';
+      cfgImportText.value = JSON.stringify(exportData, null, 2);
+      cfgImportArea.style.display = 'block';
+    }
+  });
+}
+
+// 导入设置 — 点击显示粘贴区
+if (cfgImportBtn) {
+  cfgImportBtn.addEventListener('click', () => {
+    cfgImportArea.style.display = 'block';
+    cfgImportText.focus();
+  });
+}
+
+// 导入确认
+if (cfgImportConfirm) {
+  cfgImportConfirm.addEventListener('click', () => {
+    const raw = (cfgImportText.value || '').trim();
+    if (!raw) {
+      didiTestResult.className = 'settings-test-result show is-error';
+      didiTestResult.textContent = '请先粘贴导出的设置 JSON';
+      return;
+    }
+    let importData;
+    try {
+      importData = JSON.parse(raw);
+    } catch (err) {
+      didiTestResult.className = 'settings-test-result show is-error';
+      didiTestResult.textContent = 'JSON 格式无效，请检查复制内容是否完整';
+      return;
+    }
+    if (!importData || typeof importData !== 'object') {
+      didiTestResult.className = 'settings-test-result show is-error';
+      didiTestResult.textContent = '格式不正确，必须是导出时生成的对象';
+      return;
+    }
+    // 合并导入数据
+    if (importData.city) appSettings.city = importData.city;
+    if (importData.didiEndpoint) appSettings.didiEndpoint = importData.didiEndpoint;
+    if (importData.didiHeaders && typeof importData.didiHeaders === 'object') {
+      appSettings.didiHeaders = importData.didiHeaders;
+    }
+    if (importData.didiBody && typeof importData.didiBody === 'object') {
+      appSettings.didiBody = importData.didiBody;
+    }
+    saveSettings(appSettings);
+    _didiEstimateCache.clear();
+    _didiEstimateInFlight.clear();
+    fillSettingsForm();
+    cfgImportText.value = '';
+    cfgImportArea.style.display = 'none';
+    didiTestResult.className = 'settings-test-result show is-success';
+    didiTestResult.textContent = '设置导入成功，请点击保存或直接测试连接';
+  });
+}
+
+// 导入取消
+if (cfgImportCancel) {
+  cfgImportCancel.addEventListener('click', () => {
+    cfgImportText.value = '';
+    cfgImportArea.style.display = 'none';
   });
 }
 

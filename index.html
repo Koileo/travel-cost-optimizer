@@ -223,7 +223,30 @@
             <i data-lucide="info"></i>
             <div>
               <div class="settings-section-title">参数存储</div>
-              <div class="settings-section-hint">自定义参数只保存在当前浏览器。滴滴报价按参数和起终点缓存 15 分钟，保存设置后立即清空旧缓存。</div>
+              <div class="settings-section-hint">设置保存在当前浏览器，导出后可在手机/其他设备导入，免去重复配置。</div>
+            </div>
+          </div>
+          <div class="settings-import-export">
+            <button class="settings-test-btn" id="cfg-export" type="button">
+              <i data-lucide="copy"></i>
+              <span>导出设置</span>
+            </button>
+            <button class="settings-test-btn" id="cfg-import-btn" type="button">
+              <i data-lucide="upload"></i>
+              <span>导入设置</span>
+            </button>
+          </div>
+          <div id="cfg-import-area" style="display:none; margin-top:8px;">
+            <textarea id="cfg-import-text" class="settings-raw-capture" rows="4" spellcheck="false" autocomplete="off" placeholder="在此粘贴导出的设置 JSON..."></textarea>
+            <div style="display:flex; gap:8px; margin-top:6px;">
+              <button class="settings-test-btn" id="cfg-import-confirm" type="button" style="flex:1;">
+                <i data-lucide="check"></i>
+                <span>确认导入</span>
+              </button>
+              <button class="settings-test-btn" id="cfg-import-cancel" type="button" style="flex:1;">
+                <i data-lucide="x"></i>
+                <span>取消</span>
+              </button>
             </div>
           </div>
         </div>
