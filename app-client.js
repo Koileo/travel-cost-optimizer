@@ -1433,10 +1433,18 @@ function formatTransitDescription(segments) {
 function saveSearchState() {
   try {
     if (allRoutes.length > 0 && startPOI && endPOI) {
+      // 去掉 API 原始数据（高德返回的坐标数组有几十KB），只保留渲染需要的字段
+      const slimRoutes = allRoutes.map(r => {
+        const { raw, ...rest } = r;
+        if (Array.isArray(rest.segments)) {
+          rest.segments = rest.segments.map(s => { const { raw: sr, ...srest } = s || {}; return srest; });
+        }
+        return rest;
+      });
       localStorage.setItem(SAVED_SEARCH_KEY, JSON.stringify({
         startPOI,
         endPOI,
-        allRoutes,
+        allRoutes: slimRoutes,
         sortMode,
         passengerCount,
         _savedAt: Date.now(),
@@ -1583,14 +1591,7 @@ function renderResults(routes) {
     `;
   }).join('');
 
-  // 添加点击事件
-  document.querySelectorAll('.result-card').forEach(card => {
-    card.addEventListener('click', () => {
-      const routeId = card.dataset.id;
-      const route = routes.find(r => r.id === routeId);
-      showRouteDetail(route);
-    });
-  });
+  // 卡片点击已通过事件委托处理（见下方 resultsList 上的 click 监听）
 
   // 自动在地图上画出推荐（第一条）路线
   const bestRoute = routes.find(r => r.badge === 'recommended') || routes[0];
@@ -3283,9 +3284,9 @@ if (cfgTestDidi) {
   });
 }
 
-// 导出设置（复制到剪贴板）
+// 导出设置 — 同时尝试剪贴板 + 写入文本框兜底
 if (cfgExport) {
-  cfgExport.addEventListener('click', async () => {
+  cfgExport.addEventListener('click', () => {
     const exportData = {
       city: appSettings.city,
       didiEndpoint: appSettings.didiEndpoint,
@@ -3294,17 +3295,30 @@ if (cfgExport) {
       _version: 1,
       _exported: new Date().toISOString(),
     };
-    try {
-      const json = JSON.stringify(exportData, null, 2);
-      await navigator.clipboard.writeText(json);
-      didiTestResult.className = 'settings-test-result show is-success';
-      didiTestResult.textContent = '设置已复制到剪贴板，可在其他设备粘贴导入';
-    } catch (err) {
-      // 剪贴板不可用时回退到选中文本
-      didiTestResult.className = 'settings-test-result show';
-      didiTestResult.textContent = '复制失败，请手动复制下方 JSON';
-      cfgImportText.value = JSON.stringify(exportData, null, 2);
+    const json = JSON.stringify(exportData, null, 2);
+    // 始终写入导入文本框，确保用户一定能拿到
+    if (cfgImportText) {
+      cfgImportText.value = json;
       cfgImportArea.style.display = 'block';
+    }
+    // 同时尝试剪贴板
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(() => {
+        if (didiTestResult) {
+          didiTestResult.className = 'settings-test-result show is-success';
+          didiTestResult.textContent = '设置已复制到剪贴板，也可从下方文本框手动复制';
+        }
+      }).catch(() => {
+        if (didiTestResult) {
+          didiTestResult.className = 'settings-test-result show';
+          didiTestResult.textContent = '自动复制失败，请手动复制下方文本框中的 JSON';
+        }
+      });
+    } else {
+      if (didiTestResult) {
+        didiTestResult.className = 'settings-test-result show';
+        didiTestResult.textContent = '当前浏览器不支持自动复制，请手动复制下方 JSON';
+      }
     }
   });
 }
@@ -3313,33 +3327,38 @@ if (cfgExport) {
 if (cfgImportBtn) {
   cfgImportBtn.addEventListener('click', () => {
     cfgImportArea.style.display = 'block';
-    cfgImportText.focus();
+    if (cfgImportText) cfgImportText.focus();
   });
 }
 
 // 导入确认
 if (cfgImportConfirm) {
   cfgImportConfirm.addEventListener('click', () => {
-    const raw = (cfgImportText.value || '').trim();
+    const raw = (cfgImportText && cfgImportText.value || '').trim();
     if (!raw) {
-      didiTestResult.className = 'settings-test-result show is-error';
-      didiTestResult.textContent = '请先粘贴导出的设置 JSON';
+      if (didiTestResult) {
+        didiTestResult.className = 'settings-test-result show is-error';
+        didiTestResult.textContent = '请先粘贴导出的设置 JSON';
+      }
       return;
     }
     let importData;
     try {
       importData = JSON.parse(raw);
     } catch (err) {
-      didiTestResult.className = 'settings-test-result show is-error';
-      didiTestResult.textContent = 'JSON 格式无效，请检查复制内容是否完整';
+      if (didiTestResult) {
+        didiTestResult.className = 'settings-test-result show is-error';
+        didiTestResult.textContent = 'JSON 格式无效，请检查复制内容是否完整';
+      }
       return;
     }
     if (!importData || typeof importData !== 'object') {
-      didiTestResult.className = 'settings-test-result show is-error';
-      didiTestResult.textContent = '格式不正确，必须是导出时生成的对象';
+      if (didiTestResult) {
+        didiTestResult.className = 'settings-test-result show is-error';
+        didiTestResult.textContent = '格式不正确，必须是导出时生成的对象';
+      }
       return;
     }
-    // 合并导入数据
     if (importData.city) appSettings.city = importData.city;
     if (importData.didiEndpoint) appSettings.didiEndpoint = importData.didiEndpoint;
     if (importData.didiHeaders && typeof importData.didiHeaders === 'object') {
@@ -3354,16 +3373,29 @@ if (cfgImportConfirm) {
     fillSettingsForm();
     cfgImportText.value = '';
     cfgImportArea.style.display = 'none';
-    didiTestResult.className = 'settings-test-result show is-success';
-    didiTestResult.textContent = '设置导入成功，请点击保存或直接测试连接';
+    if (didiTestResult) {
+      didiTestResult.className = 'settings-test-result show is-success';
+      didiTestResult.textContent = '设置导入成功，请点击保存或直接测试连接';
+    }
   });
 }
 
 // 导入取消
 if (cfgImportCancel) {
   cfgImportCancel.addEventListener('click', () => {
-    cfgImportText.value = '';
+    if (cfgImportText) cfgImportText.value = '';
     cfgImportArea.style.display = 'none';
+  });
+}
+
+// 结果卡片点击 — 用事件委托代替逐卡绑定，避免监听器累积
+if (resultsList) {
+  resultsList.addEventListener('click', (e) => {
+    const card = e.target.closest('.result-card');
+    if (!card) return;
+    const routeId = card.dataset.id;
+    const route = _lastResults.find(r => r.id === routeId);
+    if (route) showRouteDetail(route);
   });
 }
 

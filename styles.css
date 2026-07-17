@@ -62,8 +62,8 @@
 
   /* transitions */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --transition: all 0.2s var(--ease);
-  --transition-fast: all 0.15s var(--ease);
+  --transition: background-color 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease), opacity 0.2s var(--ease), transform 0.2s var(--ease);
+  --transition-fast: background-color 0.15s var(--ease), color 0.15s var(--ease), opacity 0.15s var(--ease), transform 0.15s var(--ease);
 
   /* typography */
   --font: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display",
@@ -157,9 +157,7 @@ body {
   left: 0;
   right: 0;
   height: var(--topbar-height);
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
   z-index: 50;
   transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease);
@@ -1199,9 +1197,7 @@ body {
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgb(0 0 0 / 0.5);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgb(0 0 0 / 0.55);
   animation: fade-in 0.2s var(--ease);
 }
 
