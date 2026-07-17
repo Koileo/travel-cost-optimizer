@@ -572,7 +572,19 @@ async function searchRoutes() {
     }
 
     const transitRoutes = buildFullTransitRoutes(transitResult);
-    const hybridRoutes = await searchTransitCombinations(traffic, transitResult);
+    const fullTaxiCost = taxiRoutes[0] ? taxiRoutes[0].cost : null;
+    const [
+      multimodalRoutes,
+      busThenTaxiRoutes,
+      taxiToTransitRoutes,
+      taxiTransitTaxiRoutes,
+    ] = await Promise.all([
+      searchTransitCombinations(traffic, transitResult),
+      searchBusThenTaxi(traffic, transitResult, fullTaxiCost),
+      searchTaxiToTransit(traffic, transitResult, fullTaxiCost),
+      searchTaxiTransitTaxi(traffic, transitResult, fullTaxiCost),
+    ]);
+    const hybridRoutes = [...multimodalRoutes, ...busThenTaxiRoutes, ...taxiToTransitRoutes, ...taxiTransitTaxiRoutes];
     allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
       .filter(route => countTaxiSegments(route) <= 2);
 
@@ -854,7 +866,7 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
 
     accessVariants.forEach(access => {
       egressVariants.forEach(egress => {
-        if (access.type === 'walk' && egress.type === 'walk') return;
+        if (access.type !== 'taxi' && egress.type !== 'taxi') return;
         const taxiSegments = access.taxiSegments + egress.taxiSegments;
         if (taxiSegments > 2) return;
 
