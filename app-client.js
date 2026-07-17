@@ -1333,6 +1333,11 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
       });
     }
   }
+  // 用 plan.cost 作为下限防止兜底 2 元严重低估（如市域机场线实际 20+ 元）
+  const planCostFloor = (plan.cost || 0) * station.ratio;
+  if (planCostFloor > transitCost) {
+    transitCost = planCostFloor;
+  }
 
   const taxiDistance = calculateDistance(
     [station.location.lng, station.location.lat],
