@@ -103,6 +103,7 @@ let endPOI = null;
 let allRoutes = [];
 let passengerCount = 1;
 let _lastResults = []; // 缓存最近一次搜索结果，人数变化时重渲染
+const SAVED_SEARCH_KEY = 'travel-optimizer-last-search';
 
 const COMFORT_WEIGHTS = {
   walk: 1,
@@ -433,6 +434,15 @@ function getComfortStars(route) {
   return 1;
 }
 
+// 根据星星数返回中文标签
+function getComfortLabel(stars) {
+  if (stars >= 5) return '极佳';
+  if (stars >= 4) return '舒适';
+  if (stars >= 3) return '一般';
+  if (stars >= 2) return '凑合';
+  return '折腾';
+}
+
 function renderComfortStars(route) {
   const stars = getComfortStars(route);
   return `<span class="comfort-stars" aria-label="舒适度 ${stars} 星" title="舒适度 ${stars}/5">${
@@ -574,6 +584,7 @@ async function searchRoutes() {
     }
 
     renderResults(allRoutes.slice(0, 14));
+    saveSearchState();
   } catch (error) {
     console.error('查询失败:', error);
     resultsList.innerHTML = `
@@ -1418,6 +1429,50 @@ function formatTransitDescription(segments) {
   return steps.slice(0, 5).join(' → ') + (steps.length > 5 ? '...' : '');
 }
 
+// 保存搜索结果到 localStorage，刷新后可恢复
+function saveSearchState() {
+  try {
+    if (allRoutes.length > 0 && startPOI && endPOI) {
+      localStorage.setItem(SAVED_SEARCH_KEY, JSON.stringify({
+        startPOI,
+        endPOI,
+        allRoutes,
+        sortMode,
+        passengerCount,
+        _savedAt: Date.now(),
+      }));
+    }
+  } catch (e) { /* quota exceeded, ignore */ }
+}
+
+// 恢复上次搜索结果
+function restoreSearchState() {
+  try {
+    const raw = localStorage.getItem(SAVED_SEARCH_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (!saved || !saved.startPOI || !saved.endPOI || !Array.isArray(saved.allRoutes) || saved.allRoutes.length === 0) {
+      return false;
+    }
+    startPOI = saved.startPOI;
+    endPOI = saved.endPOI;
+    allRoutes = saved.allRoutes;
+    sortMode = saved.sortMode || 'balanced';
+    passengerCount = saved.passengerCount || 1;
+    // 更新 UI 控件状态
+    if (passengerCountEl) passengerCountEl.textContent = passengerCount;
+    document.querySelectorAll('.mode-option').forEach(b => {
+      const active = b.dataset.mode === sortMode;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    renderResults(allRoutes.slice(0, 14));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // 渲染结果
 function renderResults(routes) {
   _lastResults = routes; // 缓存，人数变化时复用
@@ -1511,10 +1566,10 @@ function renderResults(routes) {
           </div>
           <div class="result-meta">
             <span class="result-time">
-              <i data-lucide="clock"></i>${safeTime} 分钟
+              <i data-lucide="clock"></i>${fmtMinutes(safeTime)}
             </span>
             <span class="result-comfort">
-              <span>舒适</span>${renderComfortStars(route)}
+              <span>${getComfortLabel(getComfortStars(route))}</span>${renderComfortStars(route)}
             </span>
             <span class="result-distance">${distanceKm} km</span>
           </div>
@@ -1665,11 +1720,20 @@ function fmtDist(meters) {
   return `${(m / 1000).toFixed(1)} km`;
 }
 
-// 把秒数格式化为"X 分钟"
+// 把秒数格式化为"X 分钟"或"X 小时 Y 分钟"
 function fmtTime(seconds) {
-  const min = Math.round((seconds || 0) / 60);
-  if (min < 1) return '< 1 分钟';
-  return `约 ${min} 分钟`;
+  const totalMin = Math.round((seconds || 0) / 60);
+  if (totalMin < 1) return '< 1 分钟';
+  if (totalMin < 60) return `约 ${totalMin} 分钟`;
+  const hours = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  if (mins === 0) return `约 ${hours} 小时`;
+  return `约 ${hours} 小时 ${mins} 分钟`;
+}
+
+// 把分钟数格式化为"X 分钟"或"X 小时 Y 分钟"（route.time 等字段是分钟）
+function fmtMinutes(minutes) {
+  return fmtTime((minutes || 0) * 60);
 }
 
 // 从步行指引文本中提取出口信息
@@ -2250,8 +2314,8 @@ function showRouteDetail(route) {
           <span class="currency">¥</span>${getDisplayCost(route).toFixed(1)}<span class="unit">元${passengerCount > 1 ? '/人' : ''}</span>
         </div>
         <div class="detail-meta">
-          <span><i data-lucide="clock"></i>${route.time} 分钟</span>
-          <span>舒适 ${renderComfortStars(route)}</span>
+          <span><i data-lucide="clock"></i>${fmtMinutes(route.time)}</span>
+          <span>${getComfortLabel(getComfortStars(route))} ${renderComfortStars(route)}</span>
           <span><i data-lucide="map-pin"></i>${distanceKm} km</span>
         </div>
       </div>
@@ -2311,6 +2375,7 @@ passengerMinus.addEventListener('click', () => {
       allRoutes.forEach(route => { route.badge = null; });
       if (allRoutes[0]) allRoutes[0].badge = 'best';
       renderResults(allRoutes.slice(0, 14));
+      saveSearchState();
     }
   }
 });
@@ -2324,6 +2389,7 @@ passengerPlus.addEventListener('click', () => {
       allRoutes.forEach(route => { route.badge = null; });
       if (allRoutes[0]) allRoutes[0].badge = 'best';
       renderResults(allRoutes.slice(0, 14));
+      saveSearchState();
     }
   }
 });
@@ -2378,6 +2444,7 @@ document.addEventListener('click', (e) => {
     allRoutes.forEach(route => { route.badge = null; });
     if (allRoutes[0]) allRoutes[0].badge = 'best';
     renderResults(allRoutes.slice(0, 14));
+    saveSearchState();
   }
 });
 
@@ -3303,6 +3370,7 @@ if (cfgImportCancel) {
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
+  restoreSearchState();
   // 等 Lucide 加载完成后再渲染图标
   if (window.lucide) {
     refreshIcons();
