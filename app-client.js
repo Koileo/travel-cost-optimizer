@@ -2280,51 +2280,73 @@ function drawRouteOnMap(route) {
   const toXY = p => (Array.isArray(p) ? p : (p && typeof p.lng === 'number' ? [p.lng, p.lat] : null));
 
   const COLORS = {
-    SUBWAY: '#16a34a', BUS: '#2563eb', WALK: '#9ca3af', RIDE: '#0d9488', TAXI: '#f97316',
+    SUBWAY: '#16B364', BUS: '#3B82F6', WALK: '#94A3B8', RIDE: '#06B6D4', TAXI: '#F59E0B',
   };
-  const ZINDEX_LINE = 10, ZINDEX_STATION = 20;
+  const ZINDEX_LINE = 10, ZINDEX_STATION = 60;
 
-  // 辅助：画线段
+  // 辅助：画线段（带白色描边，增加层次感）
   function addLine(path, color, opts = {}) {
-    // 校验 path：至少 2 个点，每个点有两个有效数字
     if (!Array.isArray(path) || path.length < 2) return;
     const validPath = path.filter(p => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]));
     if (validPath.length < 2) return;
-    const line = new AMap.Polyline({
-      path: validPath,
-      strokeColor: color,
-      strokeWeight: opts.weight || 5,
+
+    const weight = opts.weight || 5;
+    const baseOpts = {
+      path: validPath, lineJoin: 'round', lineCap: 'round',
       strokeStyle: opts.dashed ? 'dashed' : 'solid',
-      strokeOpacity: opts.opacity || 0.85,
-      lineJoin: 'round', lineCap: 'round',
-      zIndex: ZINDEX_LINE,
+    };
+
+    // 白色描边（仅实线路线）
+    if (!opts.noOutline) {
+      const outline = new AMap.Polyline({
+        ...baseOpts,
+        strokeColor: opts.outlineColor || '#ffffff',
+        strokeWeight: weight + 4,
+        strokeOpacity: 0.85,
+        strokeStyle: 'solid',
+        zIndex: ZINDEX_LINE,
+        borderWeight: 0,
+      });
+      outline.setMap(map);
+      _routeOverlays.push(outline);
+    }
+
+    // 主线
+    const line = new AMap.Polyline({
+      ...baseOpts,
+      strokeColor: color,
+      strokeWeight: weight,
+      strokeOpacity: opts.opacity || 0.92,
+      zIndex: ZINDEX_LINE + 1,
+      borderWeight: 0,
     });
     line.setMap(map);
     _routeOverlays.push(line);
   }
 
-  // 辅助：画站点标记（小圆点 + 文本标签）
+  // 辅助：画站点标记
   function addStation(lngLat, name, mode) {
-    const color = COLORS[mode] || '#666';
-    const dotSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
-      <circle cx="8" cy="8" r="6" fill="${color}" stroke="white" stroke-width="2.5"/>
+    const color = COLORS[mode] || '#6B7280';
+    const size = 18;
+    const dotSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
+      <circle cx="${size/2}" cy="${size/2}" r="6" fill="${color}" stroke="white" stroke-width="3"/>
     </svg>`;
     const marker = new AMap.Marker({
       position: lngLat,
-      offset: new AMap.Pixel(-8, -8),
+      offset: new AMap.Pixel(-size/2, -size/2),
       zIndex: ZINDEX_STATION,
       icon: new AMap.Icon({
-        size: new AMap.Size(16, 16),
-        imageSize: new AMap.Size(16, 16),
+        size: new AMap.Size(size, size),
+        imageSize: new AMap.Size(size, size),
         image: dotSvg,
       }),
       label: name ? {
         content: `<div style="
-          background:#fff;color:#1f2937;padding:2px 8px;border-radius:4px;
-          font-size:11px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.15);
-          margin-top:4px;line-height:1.4;
+          background:rgba(255,255,255,0.95);color:#1e293b;padding:3px 10px;border-radius:6px;
+          font-size:12px;font-weight:500;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.12);
+          margin-top:6px;line-height:1.3;
         ">${name}</div>`,
-        offset: new AMap.Pixel(-30, 12),
+        offset: new AMap.Pixel(-35, 14),
       } : undefined,
     });
     marker.setMap(map);
@@ -2367,10 +2389,10 @@ function drawRouteOnMap(route) {
           : null;
 
         if (walkPath.length >= 2) {
-          addLine(walkPath, COLORS.WALK, { weight: 3, dashed: true, opacity: 0.6 });
+          addLine(walkPath, COLORS.WALK, { weight: 3, dashed: true, opacity: 0.6, noOutline: true });
           prevPoint = walkPath[walkPath.length - 1];
         } else if (prevPoint && walkEnd) {
-          addLine([prevPoint, walkEnd], COLORS.WALK, { weight: 3, dashed: true, opacity: 0.6 });
+          addLine([prevPoint, walkEnd], COLORS.WALK, { weight: 3, dashed: true, opacity: 0.6, noOutline: true });
           prevPoint = walkEnd;
         }
       } else if (mode === 'SUBWAY' || mode === 'BUS') {
@@ -2386,7 +2408,7 @@ function drawRouteOnMap(route) {
           Math.abs(prevPoint[0] - onLoc[0]) > 0.0001 ||
           Math.abs(prevPoint[1] - onLoc[1]) > 0.0001
         )) {
-          addLine([prevPoint, onLoc], COLORS.WALK, { weight: 2, dashed: true, opacity: 0.5 });
+          addLine([prevPoint, onLoc], COLORS.WALK, { weight: 2, dashed: true, opacity: 0.5, noOutline: true });
         }
 
         // 公交/地铁线路：优先用 transit.path（中间坐标），兜底直线
