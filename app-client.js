@@ -1903,6 +1903,18 @@ function extractExitInfo(instruction) {
   return '';
 }
 
+// 从单条步行指令中提取入口号
+function extractGateFromInstr(instr) {
+  if (!instr) return '';
+  let m = instr.match(/[（(]\s*(\d+|[A-Da-d])\s*(号?口|号门|出入口)\s*[）)]/);
+  if (m) return m[1] + '号口';
+  m = instr.match(/(\d+)\s*(号口|号门)\s*(进[站入]|进入)/);
+  if (m) return m[1] + '号口';
+  m = instr.match(/([A-Da-d])\s*口\s*(进[站入]|进入)/);
+  if (m) return m[1] + '口';
+  return '';
+}
+
 // 从步行段中提取入口/出口号（如 "3号口" "A口"）
 function extractGateFromWalkSegs(walkSegments) {
   if (!Array.isArray(walkSegments) || !walkSegments.length) return '';
@@ -1911,16 +1923,8 @@ function extractGateFromWalkSegs(walkSegments) {
     const steps = seg.walking.steps;
     if (!Array.isArray(steps) || !steps.length) continue;
     for (const step of steps) {
-      const instr = step.instruction || '';
-      // "到达XX站(3号口)" / "到达XX站，3号口" / "从3号口进入"
-      let m = instr.match(/[（(]\s*(\d+|[A-Da-d])\s*(号?口|号门|出入口)\s*[）)]/);
-      if (m) return m[1] + '号口';
-      // "3号口进站" / "A口进入"
-      m = instr.match(/(\d+)\s*(号口|号门)\s*(进[站入]|进入)/);
-      if (m) return m[1] + '号口';
-      // 字母口
-      m = instr.match(/([A-Da-d])\s*口\s*(进[站入]|进入)/);
-      if (m) return m[1] + '口';
+      const gate = extractGateFromInstr(step.instruction || '');
+      if (gate) return gate;
     }
   }
   return '';
@@ -1948,12 +1952,15 @@ function buildTransitTimeline(planSegments, startName, endName) {
 
     if (mode === 'WALK') {
       const firstStep = seg.walking && seg.walking.steps && seg.walking.steps[0];
-      const instr = firstStep && firstStep.instruction ? firstStep.instruction : '沿道路步行';
+      const lastStep = seg.walking && seg.walking.steps && seg.walking.steps[seg.walking.steps.length - 1];
+      const firstInstr = firstStep && firstStep.instruction ? firstStep.instruction : '';
+      const lastInstr = lastStep && lastStep.instruction ? lastStep.instruction : '';
       const isLastWalk = idx === segs.length - 1;
+      const isFirstWalk = idx === 0;
 
       // 如果前一段是地铁，检查步行指引中有没有出口信息
       const prevIsSubway = prevSeg && (prevSeg.transit_mode === 'SUBWAY') && prevSeg.transit;
-      const exitInfo = prevIsSubway ? extractExitInfo(instr) : '';
+      const exitInfo = prevIsSubway ? extractExitInfo(firstInstr) : '';
 
       const walkTitle = isLastWalk
         ? `步行 ${fmtDist(seg.distance)} 至目的地`
@@ -1961,9 +1968,25 @@ function buildTransitTimeline(planSegments, startName, endName) {
           ? `步行 ${fmtDist(seg.distance)} 换乘`
           : `步行 ${fmtDist(seg.distance)}`;
 
-      const walkSubtitle = exitInfo
-        ? `从 ${exitInfo} 出站 · ${instr.replace(/从[A-Da-d]\s*(出口|口)\s*(或[A-Da-d]\s*(出口|口))?\s*/,'')}`
-        : instr;
+      // 构造有意义的 subtitle
+      let walkSubtitle;
+      if (exitInfo) {
+        walkSubtitle = `从 ${exitInfo} 出站 · ${firstInstr.replace(/从[A-Da-d]\s*(出口|口)\s*(或[A-Da-d]\s*(出口|口))?\s*/,'').trim() || '沿道路步行'}`;
+      } else if (isLastWalk) {
+        walkSubtitle = lastInstr || firstInstr || '步行到达目的地';
+      } else {
+        // 找到下一个公交/地铁段，显示目的站名
+        const nextTransit = segs.slice(idx + 1).find(s => s.transit_mode === 'SUBWAY' || s.transit_mode === 'BUS');
+        const nextOnStation = nextTransit?.transit?.on_station?.name;
+        if (nextOnStation) {
+          // 尝试从最后一步提取入口号
+          const gateFromLast = lastInstr ? extractGateFromInstr(lastInstr) : '';
+          const stationLabel = gateFromLast ? `${nextOnStation}(${gateFromLast})` : nextOnStation;
+          walkSubtitle = `步行至「${stationLabel}」进站乘车`;
+        } else {
+          walkSubtitle = firstInstr || lastInstr || '沿道路步行';
+        }
+      }
 
       steps.push({
         icon: 'footprints',
