@@ -476,7 +476,15 @@ function getWeatherPenalty(weather) {
     }
   }
 
-  const totalBonus = tempBonus + rainBonus;
+  // 高湿惩罚（闷热感，汗液不易蒸发）
+  let humidityBonus = 0;
+  const humidity = weather.humidity;
+  if (humidity != null && !isNaN(humidity)) {
+    if (humidity > 90)      { humidityBonus = 0.3; labelParts.push('高湿'); }
+    else if (humidity > 80) { humidityBonus = 0.15; /* 轻微不标注 */ }
+  }
+
+  const totalBonus = tempBonus + rainBonus + humidityBonus;
   const walkBonus = totalBonus;   // 步行直接受影响
   const rideBonus = totalBonus * 1.2; // 骑行更受天气影响（风吹、路面湿滑）
 
