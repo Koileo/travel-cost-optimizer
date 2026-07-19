@@ -114,6 +114,32 @@ const COMFORT_WEIGHTS = {
   taxi: 0.1,
 };
 
+// 天气舒适度惩罚系数（用于 walk 和 ride）
+let _currentWeather = null; // { temp, weather, humidity }
+
+async function fetchWeather(city) {
+  return new Promise((resolve) => {
+    AMap.plugin('AMap.Weather', () => {
+      const weather = new AMap.Weather();
+      weather.getLive(city, (err, data) => {
+        if (err || !data) {
+          console.warn('[天气] 获取失败，使用默认值:', err);
+          resolve(null);
+          return;
+        }
+        const info = {
+          temp: data.temperature != null ? Number(data.temperature) : null,
+          weather: data.weather || '',
+          humidity: data.humidity != null ? Number(data.humidity) : null,
+          reportTime: data.reportTime || '',
+        };
+        console.info('[天气] 获取成功:', info);
+        resolve(info);
+      });
+    });
+  });
+}
+
 // 城市 → 地图中心坐标（用于初始化和切换城市时定位）
 const CITY_CENTERS = {
   '北京': [116.397428, 39.90923],
@@ -397,19 +423,85 @@ function getSegmentMinutes(segment, fallbackMinutes) {
   return distance > 0 ? distance / speed / 60 : fallbackMinutes;
 }
 
+// 天气惩罚系数：返回 walk/ride 的额外倍数（0 = 无惩罚）
+function getWeatherPenalty(weather) {
+  if (!weather) return { walkBonus: 0, rideBonus: 0, label: '' };
+
+  const temp = weather.temp;
+  const weatherText = (weather.weather || '').toLowerCase();
+  let tempBonus = 0;
+  let labelParts = [];
+
+  // 温度惩罚
+  if (temp != null && !isNaN(temp)) {
+    if (temp < 0)        { tempBonus = 2.0; labelParts.push(`${temp}°C极寒`); }
+    else if (temp < 5)   { tempBonus = 1.5; labelParts.push(`${temp}°C寒冷`); }
+    else if (temp < 12)  { tempBonus = 0.5; labelParts.push(`${temp}°C偏冷`); }
+    else if (temp <= 28) { /* 舒适区，无惩罚 */ }
+    else if (temp < 33)  { tempBonus = 0.5; labelParts.push(`${temp}°C偏热`); }
+    else if (temp < 37)  { tempBonus = 1.5; labelParts.push(`${temp}°C炎热`); }
+    else                 { tempBonus = 2.5; labelParts.push(`${temp}°C酷热`); }
+  }
+
+  // 降雨惩罚
+  let rainBonus = 0;
+  const rainPatterns = [
+    { keywords: ['暴雨','大暴雨','特大暴雨','雷阵雨转暴雨'], bonus: 2.5 },
+    { keywords: ['大雨','中到大雨','雷阵雨转大雨'], bonus: 1.5 },
+    { keywords: ['中雨','小到中雨','阵雨','雷阵雨'], bonus: 0.8 },
+    { keywords: ['小雨','毛毛雨','雨夹雪'], bonus: 0.3 },
+    { keywords: ['雪','中雪','大雪','暴雪'], bonus: 1.5 },
+    { keywords: ['小雪','阵雪'], bonus: 0.8 },
+    { keywords: ['雾','霾','扬沙','沙尘','浮尘'], bonus: 0.3 },
+  ];
+  for (const { keywords, bonus } of rainPatterns) {
+    if (keywords.some(k => weatherText.includes(k))) {
+      rainBonus = bonus;
+      labelParts.push(keywords[0]);
+      break;
+    }
+  }
+
+  const totalBonus = tempBonus + rainBonus;
+  const walkBonus = totalBonus;   // 步行直接受影响
+  const rideBonus = totalBonus * 1.2; // 骑行更受天气影响（风吹、路面湿滑）
+
+  return {
+    walkBonus,
+    rideBonus,
+    label: labelParts.length ? `⚠️ ${labelParts.join(' + ')}` : '',
+  };
+}
+
 // 舒适成本越低越好：出行暴露时间 + 候车/换乘负担。
 function getComfortCost(route) {
   const segments = Array.isArray(route?.segments) && route.segments.length
     ? route.segments
     : [{ type: route?.type, time: (route?.time || 0) * 60 }];
   const fallbackMinutes = Math.max(1, (route?.time || 0) / segments.length);
+  const weather = _currentWeather;
+  const wp = getWeatherPenalty(weather);
   let discomfort = 0;
   let transitBoardings = 0;
   let taxiSegments = 0;
+  let rideMinutes = 0;
+  let walkMinutes = 0;
 
   segments.forEach(segment => {
     const mode = getSegmentMode(segment);
-    discomfort += getSegmentMinutes(segment, fallbackMinutes) * (COMFORT_WEIGHTS[mode] ?? 0.5);
+    const minutes = getSegmentMinutes(segment, fallbackMinutes);
+    let weight = COMFORT_WEIGHTS[mode] ?? 0.5;
+
+    // 天气对步行和骑行的惩罚
+    if (mode === 'walk') {
+      weight *= (1 + wp.walkBonus);
+      walkMinutes += minutes;
+    } else if (mode === 'ride') {
+      weight *= (1 + wp.rideBonus);
+      rideMinutes += minutes;
+    }
+
+    discomfort += minutes * weight;
     if (mode === 'bus' || mode === 'subway' || mode === 'transit') transitBoardings++;
     if (mode === 'taxi') taxiSegments++;
   });
@@ -442,9 +534,17 @@ function getComfortLabel(stars) {
   return '折腾';
 }
 
+function getWeatherComfortNote() {
+  if (!_currentWeather) return '';
+  const wp = getWeatherPenalty(_currentWeather);
+  return wp.label || '';
+}
+
 function renderComfortStars(route) {
   const stars = getComfortStars(route);
-  return `<span class="comfort-stars" aria-label="舒适度 ${stars} 星" title="舒适度 ${stars}/5">${
+  const weatherNote = getWeatherComfortNote();
+  const weatherHint = weatherNote ? ` · ${weatherNote}` : '';
+  return `<span class="comfort-stars" aria-label="舒适度 ${stars} 星" title="舒适度 ${stars}/5${weatherHint}">${
     Array.from({ length: 5 }, (_, index) =>
       `<i data-lucide="star" class="comfort-star ${index < stars ? 'is-active' : ''}"></i>`
     ).join('')
@@ -557,12 +657,19 @@ async function searchRoutes() {
 
   try {
     // 各基础路网只查询一次；混合方案复用公共交通主干。
-    const [taxiRoutes, transitResult, walkingRoutes, ridingRoutes] = await Promise.all([
-      searchFullTaxi(),
-      searchTransitPlans(),
-      searchFullWalk(),
-      searchFullRide(),
+    const [[taxiRoutes, transitResult, walkingRoutes, ridingRoutes], weatherData] = await Promise.all([
+      Promise.all([
+        searchFullTaxi(),
+        searchTransitPlans(),
+        searchFullWalk(),
+        searchFullRide(),
+      ]),
+      fetchWeather(appSettings.city || '北京'),
     ]);
+    _currentWeather = weatherData;
+    if (weatherData) {
+      console.info('[天气] 已更新舒适度基准:', weatherData);
+    }
     const traffic = extractTrafficFactor(taxiRoutes[0]);
 
     // 给打车路线挂上拥堵分析结果
@@ -1587,6 +1694,7 @@ function renderResults(routes) {
             </span>
             <span class="result-comfort">
               <span>${getComfortLabel(getComfortStars(route))}</span>${renderComfortStars(route)}
+              ${getWeatherComfortNote() ? `<span class="weather-note">${getWeatherComfortNote()}</span>` : ''}
             </span>
             <span class="result-distance">${distanceKm} km</span>
           </div>
@@ -2310,6 +2418,10 @@ function showRouteDetail(route) {
   }
 
   const distanceKm = Math.round((route.distance || 0) / 1000 * 10) / 10;
+  const weatherNote = getWeatherComfortNote();
+  const weatherBanner = weatherNote
+    ? `<div class="weather-banner"><i data-lucide="cloud-rain"></i><span>${weatherNote} — 步行/骑行舒适度降低</span></div>`
+    : '';
   const trafficNote = (route.category === 'hybrid' && route.raw && route.raw.trafficSpeedKmh)
     ? `<div class="traffic-note"><i data-lucide="traffic-cone"></i><span>当前路况下打车约 <strong>${route.raw.trafficSpeedKmh} km/h</strong>，时间已含堵车</span></div>`
     : (route.category === 'taxi' && route.raw)
@@ -2329,6 +2441,7 @@ function showRouteDetail(route) {
           <span><i data-lucide="map-pin"></i>${distanceKm} km</span>
         </div>
       </div>
+      ${weatherBanner}
       ${trafficNote}
       ${timelineSteps.length > 0 ? renderTimeline(timelineSteps) : '<p class="empty-hint">暂无详细路线信息</p>'}
     </div>
