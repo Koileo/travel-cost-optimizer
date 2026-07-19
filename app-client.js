@@ -1586,9 +1586,22 @@ function formatTransitDescription(segments) {
 function saveSearchState() {
   try {
     if (allRoutes.length > 0 && startPOI && endPOI) {
-      // 去掉 API 原始数据（高德返回的坐标数组有几十KB），只保留渲染需要的字段
       const slimRoutes = allRoutes.map(r => {
         const { raw, ...rest } = r;
+        // 保留地图渲染必需的 path/segments 坐标数据
+        const slimRaw = {};
+        if (raw) {
+          if (Array.isArray(raw.path)) slimRaw.path = raw.path;             // walk/ride/taxi 路径
+          if (Array.isArray(raw.segments)) slimRaw.segments = raw.segments;  // transit 路段
+          if (raw.taxiLegs) slimRaw.taxiLegs = raw.taxiLegs;                 // hybrid 打车段
+          if (raw.endpointLegs) slimRaw.endpointLegs = raw.endpointLegs;     // hybrid 端点
+          if (raw.taxiCost != null) slimRaw.taxiCost = raw.taxiCost;
+          if (raw.transitCost != null) slimRaw.transitCost = raw.transitCost;
+          if (raw.trafficSpeedKmh != null) slimRaw.trafficSpeedKmh = raw.trafficSpeedKmh;
+          if (raw.taxiDistance != null) slimRaw.taxiDistance = raw.taxiDistance;
+          if (raw.station) slimRaw.station = raw.station;
+        }
+        rest.raw = Object.keys(slimRaw).length ? slimRaw : undefined;
         if (Array.isArray(rest.segments)) {
           rest.segments = rest.segments.map(s => { const { raw: sr, ...srest } = s || {}; return srest; });
         }
@@ -2357,24 +2370,25 @@ function drawRouteOnMap(route) {
     }
   }
 
-  // ── Taxi 路线：粗实线 ──
-  if (route.type === 'taxi') {
-    if (startPOI && isValidLocation(startPOI.location) && endPOI && isValidLocation(endPOI.location)) {
+  // ── Taxi / Walk / Ride：用 AMap 返回的详细 path ──
+  if ((route.type === 'taxi' || route.type === 'walk' || route.type === 'ride') && route.raw) {
+    const mode = route.type === 'ride' ? 'RIDE' : route.type === 'taxi' ? 'TAXI' : 'WALK';
+    const rawPath = route.raw.path;
+    if (Array.isArray(rawPath) && rawPath.length >= 2) {
+      const points = rawPath.map(p => [p.lng, p.lat]);
+      addLine(points, COLORS[mode], {
+        weight: route.type === 'taxi' ? 6 : route.type === 'ride' ? 5 : 3,
+        dashed: route.type === 'walk',
+        opacity: route.type === 'walk' ? 0.75 : 0.85,
+      });
+    } else if (startPOI && endPOI) {
+      // 兜底：直线
       addLine(
-        [[startPOI.location.lng, startPOI.location.lat],
-         [endPOI.location.lng, endPOI.location.lat]],
-        COLORS.TAXI, { weight: 6 }
+        [[startPOI.location.lng, startPOI.location.lat], [endPOI.location.lng, endPOI.location.lat]],
+        COLORS[mode],
+        { weight: route.type === 'taxi' ? 6 : route.type === 'ride' ? 5 : 3, dashed: route.type === 'walk', opacity: 0.75 }
       );
     }
-  }
-
-  if ((route.type === 'walk' || route.type === 'ride') && startPOI && endPOI) {
-    const mode = route.type === 'ride' ? 'RIDE' : 'WALK';
-    addLine(
-      [[startPOI.location.lng, startPOI.location.lat], [endPOI.location.lng, endPOI.location.lat]],
-      COLORS[mode],
-      { weight: route.type === 'ride' ? 5 : 3, dashed: route.type === 'walk', opacity: 0.75 }
-    );
   }
 
   // ── Hybrid 路线 ──
