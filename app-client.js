@@ -2049,19 +2049,35 @@ function buildHybridTimeline(route) {
       });
     } else if (segType === 'walk') {
       const dist = fmtDist(seg.distance || 0);
+      const to = seg.toStation || '';
+      const from = seg.fromStation || '';
+      let subtitle = '';
+      let detail = '';
+      if (isLastSeg) {
+        subtitle = from ? `从 ${from} 步行到达` : '';
+        detail = '到达';
+      } else {
+        subtitle = to ? `步行至「${to}」进站乘车` : (from ? `从「${from}」出发` : '');
+        detail = '换乘';
+      }
       steps.push({
         icon: 'footprints',
-        title: isLastSeg ? `步行 ${dist} 至目的地` : `步行 ${dist} 换乘`,
-        subtitle: '',
-        detail: isLastSeg ? '到达' : '',
+        title: isLastSeg ? `步行 ${dist} 至目的地` : `步行 ${dist}`,
+        subtitle,
+        detail,
       });
     } else if (segType === 'ride') {
       const dist = fmtDist(seg.distance || 0);
+      const to = seg.toStation || '';
+      const from = seg.fromStation || '';
+      let subtitle = `${from} → ${to}`;
+      let detail = isLastSeg ? '还车后到达' : '还车后换乘';
+      if (!from && !to) subtitle = '';
       steps.push({
         icon: 'bike',
         title: `骑行 ${dist}`,
-        subtitle: `${seg.fromStation || '起点'} → ${seg.toStation || '换乘点'}`,
-        detail: isLastSeg ? '还车后到达' : '还车后换乘',
+        subtitle,
+        detail,
       });
     }
   });
