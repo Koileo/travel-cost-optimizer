@@ -1586,15 +1586,34 @@ function formatTransitDescription(segments) {
 function saveSearchState() {
   try {
     if (allRoutes.length > 0 && startPOI && endPOI) {
+      // AMap LngLat 对象用 getter (lng/lat)，JSON.stringify 后变成 {}，
+      // 必须先转为 [lng, lat] 数组才能序列化
+      const toCoord = p => (p && typeof p.lng === 'number') ? [p.lng, p.lat] : p;
+      const toLocation = loc => (loc && typeof loc.lng === 'number') ? { lng: loc.lng, lat: loc.lat } : loc;
+
       const slimRoutes = allRoutes.map(r => {
         const { raw, ...rest } = r;
-        // 保留地图渲染必需的 path/segments 坐标数据
         const slimRaw = {};
         if (raw) {
-          if (Array.isArray(raw.path)) slimRaw.path = raw.path;             // walk/ride/taxi 路径
-          if (Array.isArray(raw.segments)) slimRaw.segments = raw.segments;  // transit 路段
-          if (raw.taxiLegs) slimRaw.taxiLegs = raw.taxiLegs;                 // hybrid 打车段
-          if (raw.endpointLegs) slimRaw.endpointLegs = raw.endpointLegs;     // hybrid 端点
+          // walk/ride/taxi 路径：LngLat[] → [[lng,lat],...]
+          if (Array.isArray(raw.path)) slimRaw.path = raw.path.map(toCoord);
+          // transit 路段：深拷贝并转换其中的 LngLat
+          if (Array.isArray(raw.segments)) {
+            slimRaw.segments = raw.segments.map(seg => {
+              const s = { ...seg, transit: seg.transit ? { ...seg.transit } : undefined };
+              if (s.transit?.on_station) s.transit.on_station = { ...s.transit.on_station, location: toLocation(s.transit.on_station.location) };
+              if (s.transit?.off_station) s.transit.off_station = { ...s.transit.off_station, location: toLocation(s.transit.off_station.location) };
+              if (s.transit?.entrance) s.transit.entrance = { name: s.transit.entrance.name, location: toLocation(s.transit.entrance.location) };
+              if (s.transit?.exit) s.transit.exit = { name: s.transit.exit.name, location: toLocation(s.transit.exit.location) };
+              // walking steps 中的 path
+              if (seg.walking?.steps) {
+                s.walking = { ...seg.walking, steps: seg.walking.steps.map(step => ({ ...step, path: Array.isArray(step.path) ? step.path.map(toCoord) : step.path })) };
+              }
+              return s;
+            });
+          }
+          if (raw.taxiLegs) slimRaw.taxiLegs = raw.taxiLegs;                 // hybrid 打车段 (已是数组)
+          if (raw.endpointLegs) slimRaw.endpointLegs = raw.endpointLegs;     // hybrid 端点 (已是数组)
           if (raw.taxiCost != null) slimRaw.taxiCost = raw.taxiCost;
           if (raw.transitCost != null) slimRaw.transitCost = raw.transitCost;
           if (raw.trafficSpeedKmh != null) slimRaw.trafficSpeedKmh = raw.trafficSpeedKmh;
@@ -2251,6 +2270,9 @@ function drawRouteOnMap(route) {
   clearRouteOverlays();
   if (!map || !route) return;
 
+  // 坐标统一转换：支持 {lng,lat}（实时）和 [lng,lat]（缓存）
+  const toXY = p => (Array.isArray(p) ? p : (p && typeof p.lng === 'number' ? [p.lng, p.lat] : null));
+
   const COLORS = {
     SUBWAY: '#16a34a', BUS: '#2563eb', WALK: '#9ca3af', RIDE: '#0d9488', TAXI: '#f97316',
   };
@@ -2321,7 +2343,7 @@ function drawRouteOnMap(route) {
         if (seg.walking && Array.isArray(seg.walking.steps)) {
           seg.walking.steps.forEach(step => {
             if (step.path && Array.isArray(step.path)) {
-              step.path.forEach(p => walkPath.push([p.lng, p.lat]));
+              step.path.forEach(p => { const xy = toXY(p); if (xy) walkPath.push(xy); });
             }
           });
         }
@@ -2385,7 +2407,7 @@ function drawRouteOnMap(route) {
     const mode = route.type === 'ride' ? 'RIDE' : route.type === 'taxi' ? 'TAXI' : 'WALK';
     const rawPath = route.raw.path;
     if (Array.isArray(rawPath) && rawPath.length >= 2) {
-      const points = rawPath.map(p => [p.lng, p.lat]);
+      const points = rawPath.map(toXY).filter(Boolean);
       addLine(points, COLORS[mode], {
         weight: route.type === 'taxi' ? 6 : route.type === 'ride' ? 5 : 3,
         dashed: route.type === 'walk',
