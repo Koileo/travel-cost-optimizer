@@ -1605,9 +1605,15 @@ function saveSearchState() {
               if (s.transit?.off_station) s.transit.off_station = { ...s.transit.off_station, location: toLocation(s.transit.off_station.location) };
               if (s.transit?.entrance) s.transit.entrance = { name: s.transit.entrance.name, location: toLocation(s.transit.entrance.location) };
               if (s.transit?.exit) s.transit.exit = { name: s.transit.exit.name, location: toLocation(s.transit.exit.location) };
-              // walking steps 中的 path
-              if (seg.walking?.steps) {
-                s.walking = { ...seg.walking, steps: seg.walking.steps.map(step => ({ ...step, path: Array.isArray(step.path) ? step.path.map(toCoord) : step.path })) };
+              // transit.path：公交/地铁段的行驶轨迹坐标
+              if (Array.isArray(s.transit?.path)) s.transit.path = s.transit.path.map(toCoord);
+              // walking 路径
+              if (seg.walking) {
+                s.walking = { ...seg.walking };
+                if (Array.isArray(seg.walking.path)) s.walking.path = seg.walking.path.map(toCoord);
+                if (Array.isArray(seg.walking.steps)) {
+                  s.walking.steps = seg.walking.steps.map(step => ({ ...step, path: Array.isArray(step.path) ? step.path.map(toCoord) : step.path }));
+                }
               }
               return s;
             });
@@ -2338,7 +2344,7 @@ function drawRouteOnMap(route) {
       const mode = seg.transit_mode;
 
       if (mode === 'WALK') {
-        // 尝试用 walking steps 的精确路径
+        // 构建步行精确路径：优先 steps[].path → walking.path → 起终点直线
         const walkPath = [];
         if (seg.walking && Array.isArray(seg.walking.steps)) {
           seg.walking.steps.forEach(step => {
@@ -2346,6 +2352,10 @@ function drawRouteOnMap(route) {
               step.path.forEach(p => { const xy = toXY(p); if (xy) walkPath.push(xy); });
             }
           });
+        }
+        // steps 没有路径时用 walking.path
+        if (walkPath.length < 2 && seg.walking && Array.isArray(seg.walking.path)) {
+          seg.walking.path.forEach(p => { const xy = toXY(p); if (xy) walkPath.push(xy); });
         }
 
         // 下一段的 on_station 是 walking 的终点
@@ -2379,8 +2389,16 @@ function drawRouteOnMap(route) {
           addLine([prevPoint, onLoc], COLORS.WALK, { weight: 2, dashed: true, opacity: 0.5 });
         }
 
-        // 公交/地铁线路
-        if (onLoc && offLoc) {
+        // 公交/地铁线路：优先用 transit.path（中间坐标），兜底直线
+        const transitPath = transit.path;
+        if (Array.isArray(transitPath) && transitPath.length >= 2) {
+          const points = transitPath.map(toXY).filter(Boolean);
+          if (points.length >= 2) {
+            addLine(points, COLORS[mode], { weight: 5 });
+          } else if (onLoc && offLoc) {
+            addLine([onLoc, offLoc], COLORS[mode], { weight: 5 });
+          }
+        } else if (onLoc && offLoc) {
           addLine([onLoc, offLoc], COLORS[mode], { weight: 5 });
         }
 
@@ -2440,12 +2458,22 @@ function drawRouteOnMap(route) {
       (rawSegs || []).forEach(seg => {
         const mode = seg.transit_mode;
         if (mode !== 'SUBWAY' && mode !== 'BUS') return;
-        const onStation = seg.transit?.on_station;
-        const offStation = seg.transit?.off_station;
+        const transit = seg.transit || {};
+        const onStation = transit.on_station;
+        const offStation = transit.off_station;
         if (!isValidLocation(onStation?.location) || !isValidLocation(offStation?.location)) return;
         const onPoint = [onStation.location.lng, onStation.location.lat];
         const offPoint = [offStation.location.lng, offStation.location.lat];
-        addLine([onPoint, offPoint], COLORS[mode], { weight: 5 });
+
+        // 优先用 transit.path（详细轨迹），兜底直线
+        const transitPath = transit.path;
+        if (Array.isArray(transitPath) && transitPath.length >= 2) {
+          const points = transitPath.map(toXY).filter(Boolean);
+          addLine(points.length >= 2 ? points : [onPoint, offPoint], COLORS[mode], { weight: 5 });
+        } else {
+          addLine([onPoint, offPoint], COLORS[mode], { weight: 5 });
+        }
+
         addStation(onPoint, onStation.name || '上车', mode);
         addStation(offPoint, offStation.name || '下车', mode);
       });
