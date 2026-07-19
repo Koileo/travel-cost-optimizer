@@ -119,24 +119,38 @@ let _currentWeather = null; // { temp, weather, humidity }
 
 async function fetchWeather(city) {
   return new Promise((resolve) => {
-    AMap.plugin('AMap.Weather', () => {
-      const weather = new AMap.Weather();
-      weather.getLive(city, (err, data) => {
-        if (err || !data) {
-          console.warn('[天气] 获取失败，使用默认值:', err);
-          resolve(null);
-          return;
-        }
-        const info = {
-          temp: data.temperature != null ? Number(data.temperature) : null,
-          weather: data.weather || '',
-          humidity: data.humidity != null ? Number(data.humidity) : null,
-          reportTime: data.reportTime || '',
-        };
-        console.info('[天气] 获取成功:', info);
-        resolve(info);
+    let settled = false;
+    // 5 秒超时，防止插件加载失败导致 Promise 永不 resolve
+    const timeout = setTimeout(() => {
+      if (!settled) { settled = true; console.warn('[天气] 超时，跳过'); resolve(null); }
+    }, 5000);
+
+    try {
+      AMap.plugin('AMap.Weather', () => {
+        if (settled) return;
+        const weather = new AMap.Weather();
+        weather.getLive(city, (err, data) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (err || !data) {
+            console.warn('[天气] 获取失败，使用默认值:', err);
+            resolve(null);
+            return;
+          }
+          const info = {
+            temp: data.temperature != null ? Number(data.temperature) : null,
+            weather: data.weather || '',
+            humidity: data.humidity != null ? Number(data.humidity) : null,
+            reportTime: data.reportTime || '',
+          };
+          console.info('[天气] 获取成功:', info);
+          resolve(info);
+        });
       });
-    });
+    } catch (e) {
+      if (!settled) { settled = true; clearTimeout(timeout); console.warn('[天气] 插件异常:', e); resolve(null); }
+    }
   });
 }
 
