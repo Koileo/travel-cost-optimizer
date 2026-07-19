@@ -794,7 +794,7 @@ function buildFullTransitRoutes(result) {
 function searchFullTaxi() {
   return new Promise((resolve) => {
     AMap.plugin('AMap.Driving', () => {
-      const driving = new AMap.Driving({ map: map, panel: null });
+      const driving = new AMap.Driving({ panel: null });
       driving.search(startPOI.location, endPOI.location, (status, result) => {
         if (status === 'complete' && result.routes && result.routes.length > 0) {
           const route = result.routes[0];
@@ -831,7 +831,7 @@ function searchFullTaxi() {
 function searchFullWalk() {
   return new Promise(resolve => {
     AMap.plugin('AMap.Walking', () => {
-      const walking = new AMap.Walking({ map: map, panel: null });
+      const walking = new AMap.Walking({ panel: null });
       walking.search(startPOI.location, endPOI.location, (status, result) => {
         const route = status === 'complete' && result.routes?.[0];
         if (!route) return resolve([]);
@@ -860,7 +860,7 @@ function estimateRideCost(timeSeconds) {
 function searchFullRide() {
   return new Promise(resolve => {
     AMap.plugin('AMap.Riding', () => {
-      const riding = new AMap.Riding({ map: map, panel: null });
+      const riding = new AMap.Riding({ panel: null });
       riding.search(startPOI.location, endPOI.location, (status, result) => {
         const route = status === 'complete' && result.routes?.[0];
         if (!route) return resolve([]);
