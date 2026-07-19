@@ -978,6 +978,10 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
     const middleDistance = middleRaw.reduce((sum, seg) => sum + (seg.distance || 0), 0);
     if (middleDistance < 1000) return [];
 
+    // 从原始步行段中提取入口/出口号
+    const entranceGate = extractGateFromWalkSegs(leading);
+    const exitGate = extractGateFromWalkSegs(trailing);
+
     const [accessVariants, egressVariants] = await Promise.all([
       createEndpointVariants({
         side: 'access', station: entry, rawDistance: leadingDistance, rawTime: leadingTime,
@@ -1001,7 +1005,16 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
         const taxiCost = access.taxiCost + egress.taxiCost;
         const personalCost = transitCost + (access.cost - access.taxiCost) + (egress.cost - egress.taxiCost);
         const totalCost = taxiCost + personalCost;
-        const detailSegments = [access.segment, ...middleSegments, egress.segment];
+        // 注入入口/出口号到步行/骑行段
+        const accessSeg = { ...access.segment };
+        const egressSeg = { ...egress.segment };
+        if (entranceGate && (access.type === 'walk' || access.type === 'ride')) {
+          accessSeg.toStation = `${accessSeg.toStation}(${entranceGate})`;
+        }
+        if (exitGate && (egress.type === 'walk' || egress.type === 'ride')) {
+          egressSeg.fromStation = `${egressSeg.fromStation}(${exitGate})`;
+        }
+        const detailSegments = [accessSeg, ...middleSegments, egressSeg];
         const transitLabels = middleSegments
           .filter(seg => seg.type === 'transit')
           .map(seg => `${seg.mode === 'SUBWAY' ? '🚇' : '🚌'} ${parseLineInfo(seg.lineName, seg.mode).line}`);
@@ -1887,6 +1900,29 @@ function extractExitInfo(instruction) {
   // 匹配 "A出口" 或 "A口"
   const exitMatch2 = instruction.match(/([A-Da-d])\s*(出口|口)/);
   if (exitMatch2) return exitMatch2[1] + '口';
+  return '';
+}
+
+// 从步行段中提取入口/出口号（如 "3号口" "A口"）
+function extractGateFromWalkSegs(walkSegments) {
+  if (!Array.isArray(walkSegments) || !walkSegments.length) return '';
+  for (const seg of walkSegments) {
+    if (seg.transit_mode !== 'WALK' || !seg.walking) continue;
+    const steps = seg.walking.steps;
+    if (!Array.isArray(steps) || !steps.length) continue;
+    for (const step of steps) {
+      const instr = step.instruction || '';
+      // "到达XX站(3号口)" / "到达XX站，3号口" / "从3号口进入"
+      let m = instr.match(/[（(]\s*(\d+|[A-Da-d])\s*(号?口|号门|出入口)\s*[）)]/);
+      if (m) return m[1] + '号口';
+      // "3号口进站" / "A口进入"
+      m = instr.match(/(\d+)\s*(号口|号门)\s*(进[站入]|进入)/);
+      if (m) return m[1] + '号口';
+      // 字母口
+      m = instr.match(/([A-Da-d])\s*口\s*(进[站入]|进入)/);
+      if (m) return m[1] + '口';
+    }
+  }
   return '';
 }
 
