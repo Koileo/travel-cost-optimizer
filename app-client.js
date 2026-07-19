@@ -1630,6 +1630,15 @@ function restoreSearchState() {
     }
     startPOI = saved.startPOI;
     endPOI = saved.endPOI;
+    // 回填输入框显示上次选择的地点名
+    if (startInput && startPOI) {
+      startInput.value = startPOI.name || '';
+      startInput.closest('.input-wrapper')?.classList.add('selected');
+    }
+    if (endInput && endPOI) {
+      endInput.value = endPOI.name || '';
+      endInput.closest('.input-wrapper')?.classList.add('selected');
+    }
     allRoutes = saved.allRoutes;
     sortMode = saved.sortMode || 'balanced';
     passengerCount = saved.passengerCount || 1;
@@ -1640,6 +1649,7 @@ function restoreSearchState() {
       b.classList.toggle('is-active', active);
       b.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    if (map) updateMapMarkers();
     renderResults(allRoutes.slice(0, 14));
     return true;
   } catch (e) {
