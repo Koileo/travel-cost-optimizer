@@ -915,12 +915,12 @@ body {
 }
 
 .result-source.is-local {
-  background: var(--surface-hover);
-  color: var(--text-tertiary);
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
 }
 
 .result-source.is-local > [data-lucide] {
-  color: var(--text-tertiary);
+  color: #f59e0b;
 }
 
 .result-source.is-didi {
@@ -930,6 +930,32 @@ body {
 
 .result-source.is-didi > [data-lucide] {
   color: #f7931e;
+}
+
+/* 叫车不可用警告横幅 */
+.taxi-availability-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: #92400e;
+  line-height: 1.5;
+}
+
+.taxi-availability-warning > [data-lucide] {
+  color: #f59e0b;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.taxi-availability-warning strong {
+  color: #78350f;
+  font-weight: 600;
 }
 
 .result-card {

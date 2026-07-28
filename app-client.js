@@ -716,6 +716,11 @@ async function searchRoutes() {
     allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
       .filter(route => countTaxiSegments(route) <= 2);
 
+    // 检测叫车可用性：Didi 失败时标记所有含打车段的路由
+    const taxiRouteOk = taxiRoutes[0] && taxiRoutes[0].dataSource === 'didi';
+    const hybridHasDidi = hybridRoutes.some(r => r.dataSource === 'didi');
+    window._taxiAvailable = taxiRouteOk || hybridHasDidi;  // 至少有一条路线能拿到滴滴报价
+
     sortRoutes(allRoutes, sortMode);
 
     // 给"当前模式最优"打上 best 徽章
@@ -1692,6 +1697,14 @@ function renderResults(routes) {
   };
   if (resultsHint) resultsHint.textContent = sortLabels[sortMode] || sortLabels.balanced;
 
+  // 叫车可用性警告
+  const taxiWarningHtml = (!window._taxiAvailable && routes.some(r => r.category === 'taxi' || r.category === 'hybrid'))
+    ? `<div class="taxi-availability-warning">
+        <i data-lucide="alert-triangle"></i>
+        <span>该区域实时叫车数据不可用，打车费用为估算值。建议优先选择<strong>全程公交</strong>方案</span>
+      </div>`
+    : '';
+
   if (routes.length === 0) {
     resultsList.innerHTML = `
       <div class="empty-state">
@@ -1704,7 +1717,7 @@ function renderResults(routes) {
     return;
   }
 
-  resultsList.innerHTML = routes.map(route => {
+  resultsList.innerHTML = taxiWarningHtml + routes.map(route => {
     const badge = route.badge ? BADGE_META[route.badge] : null;
     const badgeHtml = badge
       ? `<div class="result-badge ${route.badge}"><i data-lucide="${badge.icon}"></i><span>${badge.label}</span></div>`
@@ -1748,8 +1761,8 @@ function renderResults(routes) {
         sourceLabel = '高德驾车预估';
         sourceClass = 'is-mcp';
       } else {
-        sourceIcon = 'calculator';
-        sourceLabel = `本地估算 · ${appSettings.city}`;
+        sourceIcon = 'alert-triangle';
+        sourceLabel = `叫车不确定 · ${appSettings.city}`;
         sourceClass = 'is-local';
       }
       sourceBadgeHtml = `
