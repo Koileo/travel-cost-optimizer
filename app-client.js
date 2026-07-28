@@ -716,10 +716,20 @@ async function searchRoutes() {
     allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
       .filter(route => countTaxiSegments(route) <= 2);
 
-    // 检测叫车可用性：Didi 失败时标记所有含打车段的路由
+    // 检测叫车可用性 + 区域难度：Didi 失败时标记所有含打车段的路由
     const taxiRouteOk = taxiRoutes[0] && taxiRoutes[0].dataSource === 'didi';
     const hybridHasDidi = hybridRoutes.some(r => r.dataSource === 'didi');
-    window._taxiAvailable = taxiRouteOk || hybridHasDidi;  // 至少有一条路线能拿到滴滴报价
+    const didiAvailable = taxiRouteOk || hybridHasDidi;  // 至少有一条路线能拿到滴滴报价
+
+    // 区域叫车难度：取所有 didi 路由里最差值（最低应答率 / 最长等待）
+    let answerRate = null, waitMinutes = null;
+    for (const r of [...taxiRoutes, ...hybridRoutes]) {
+      if (r.dataSource !== 'didi') continue;
+      answerRate = minOrNull(answerRate, r.answerRate);
+      waitMinutes = maxOrNull(waitMinutes, r.waitMinutes);
+    }
+    window._taxiDifficulty = { available: didiAvailable, answerRate, waitMinutes };
+    window._taxiAvailable = didiAvailable;  // 兼容既有引用
 
     sortRoutes(allRoutes, sortMode);
 
@@ -822,6 +832,8 @@ function searchFullTaxi() {
               segments: [{ type: 'taxi', distance, time }],
               description: `🚕 全程打车 ${distanceKm} km${carTypeLabel}`,
               dataSource,
+              answerRate: taxiEst.answerRate,
+              waitMinutes: taxiEst.waitMinutes,
               raw: route,
             }]);
           });
@@ -947,6 +959,7 @@ async function createEndpointVariants({
       type: 'taxi', icon: '🚕', label: '打车', distance: taxiDistance,
       time: drivingTime + 5 * 60, cost: estimate.cost, taxiCost: estimate.cost,
       taxiSegments: 1, dataSource: estimate.source,
+      answerRate: estimate.answerRate, waitMinutes: estimate.waitMinutes,
       segment: { type: 'taxi', distance: taxiDistance, time: drivingTime + 5 * 60, fromStation: fromName, toStation: toName },
       mapLeg: { type: 'taxi', from, to },
     });
@@ -1224,6 +1237,8 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       segments: detailSegments,
       description: desc,
       dataSource: taxiEst.source,
+      answerRate: taxiEst.answerRate,
+      waitMinutes: taxiEst.waitMinutes,
       raw: {
         stationName: c.onStation.name,
         segments: remainingSegs, // AMap 原始段，给地图绘制用
@@ -1363,6 +1378,9 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       segments: detailSegments,
       description: `🚕 到 ${candidate.entry.name} → ${transitLabels.join(' → ')} → 🚕 到终点`,
       dataSource,
+      // 两段打车取最差值：最低应答率、最长等待
+      answerRate: minOrNull(firstEstimate.answerRate, secondEstimate.answerRate),
+      waitMinutes: maxOrNull(firstEstimate.waitMinutes, secondEstimate.waitMinutes),
       raw: {
         segments: middleRawSegments,
         taxiCost,
@@ -1521,6 +1539,8 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     ],
     description: `${station.transitMode === 'SUBWAY' ? '🚇' : '🚌'} ${stationDisplay} 到 ${station.name} → 🚕 打车 ${taxiDistanceKm} km`,
     dataSource: taxiEst.source,
+    answerRate: taxiEst.answerRate,
+    waitMinutes: taxiEst.waitMinutes,
     raw: { station, taxiDistance, taxiCost, transitCost, trafficSpeedKmh: speedKmh },
   };
 }
@@ -1697,13 +1717,31 @@ function renderResults(routes) {
   };
   if (resultsHint) resultsHint.textContent = sortLabels[sortMode] || sortLabels.balanced;
 
-  // 叫车可用性警告
-  const taxiWarningHtml = (!window._taxiAvailable && routes.some(r => r.category === 'taxi' || r.category === 'hybrid'))
-    ? `<div class="taxi-availability-warning">
+  // 叫车可用性 / 难度警告
+  const taxiWarningHtml = (() => {
+    if (!routes.some(r => r.category === 'taxi' || r.category === 'hybrid')) return '';
+    const d = window._taxiDifficulty || {};
+    if (!d.available) {
+      // 滴滴未返回可用报价
+      return `<div class="taxi-availability-warning">
         <i data-lucide="alert-triangle"></i>
         <span>该区域实时叫车数据不可用，打车费用为估算值。建议优先选择<strong>全程公交</strong>方案</span>
-      </div>`
-    : '';
+      </div>`;
+    }
+    // 有滴滴报价，但应答率低 / 等待久 → 叫车较难
+    const lowRate = d.answerRate != null && d.answerRate < TAXI_DIFFICULTY.lowAnswerRate;
+    const longWait = d.waitMinutes != null && d.waitMinutes >= TAXI_DIFFICULTY.longWaitMin;
+    if (lowRate || longWait) {
+      const bits = [];
+      if (lowRate) bits.push(`应答率 ${d.answerRate}%`);
+      if (longWait) bits.push(`预计等待 ${d.waitMinutes} 分钟`);
+      return `<div class="taxi-availability-warning">
+        <i data-lucide="alert-triangle"></i>
+        <span>该区域叫车较难（${bits.join('，')}），实际可能需选更贵车型。建议优先选择<strong>全程公交</strong>方案</span>
+      </div>`;
+    }
+    return '';
+  })();
 
   if (routes.length === 0) {
     resultsList.innerHTML = `
@@ -3080,23 +3118,52 @@ const _didiEstimateCache = new Map();
 const _didiEstimateInFlight = new Map();
 const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
 
-// 解析滴滴估价 API 响应，提取最低价格
-// 返回 { price, carType, allOptions } 或 null
+// 叫车难度阈值（启发式）：应答率低于此或预计等待不短于此 → 判定该区域叫车较难
+const TAXI_DIFFICULTY = { lowAnswerRate: 60, longWaitMin: 15 };
+
+// 对可空数值取最值（null 视为缺失，不参与比较；全 null 返回 null）
+function minOrNull(a, b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.min(a, b);
+}
+function maxOrNull(a, b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
+// 解析滴滴估价 API 响应，提取「实际可叫」的最便宜车型
+// 返回 { price, carType, allOptions, skippedCarpool } 或 null
 //
 // 滴滴 pMultiEstimatePriceV3 响应结构：
-//   data.rec_layout[]   — 推荐的车型卡片（优先参考）
-//   data.layout[]        — 全部车型卡片
+//   data.rec_layout[]    — 推荐的车型卡片（优先参考，已是滴滴筛选后的可叫档）
+//   data.layout[]        — 全部车型卡片（含快送/跑腿/代驾/包车/宠物等非客运档）
 //   data.category_info[] — 类别元数据 { category_id, title, sub_title }
-//   data.estimate_data   — { productId: { price, ... } } 详细报价
+//   data.estimate_data   — { productId: { fee_amount, car_title, combo_type, disabled, ... } }
 //
-// 每条 layout/rec_layout: { price, category_id, groups, form_show_type, theme_data, ... }
+// 每条 layout/rec_layout: { price, category_id, groups[{ products[productId], ... }], theme_data, ... }
+//
+// 「实际可叫」判定（用户共识：最便宜那档往往是拼车，附近无车叫不到，需升到更贵档）：
+//   - 跳过 disabled=1 的档（滴滴自己灰掉的）
+//   - 跳过拼车档（combo_type=4 / multi_route_tip_type=carpool / 有 multi_price_list 未拼成价 / carpool_seat_list）
+//     拼车的展示价是「拼成」价，未拼成更贵且最易叫不到车
+//   - 跳过非客运档（跑腿/快送/代驾/包车/宠物，按车名关键词识别，仅在 layout 兜底路径出现）
 function parseDidiEstimateResponse(data) {
   if (!data || Number(data.errno) !== 0) return null;
 
   const respData = data.data;
   if (!respData) return null;
 
-  // 1. 构建 category_id → 名称 的映射
+  // 1. estimate_data：productId → 详情（车名 / 一口价 / 拼车 / disabled 的真相来源）
+  const detailByPid = {};
+  if (respData.estimate_data && typeof respData.estimate_data === 'object') {
+    for (const [pid, d] of Object.entries(respData.estimate_data)) {
+      detailByPid[pid] = d;
+    }
+  }
+
+  // 2. category_id → 名称（兜底用，真实车名优先取 estimate_data.car_title）
   const categoryMap = {};
   if (Array.isArray(respData.category_info)) {
     for (const cat of respData.category_info) {
@@ -3106,70 +3173,81 @@ function parseDidiEstimateResponse(data) {
     }
   }
 
-  // 2. 辅助函数：从 layout/rec_layout 数组中提取价格
+  const NON_PASSENGER_RE = /跑腿|快送|代驾|包车|宠物/;
+
+  // 某个 productId 对应的车型是否「不可叫」（拼车 / 禁用 / 非客运）
+  function isUnbookable(d) {
+    if (!d) return false;
+    if (Number(d.disabled) === 1) return true;                       // 滴滴明确灰掉
+    if (Number(d.combo_type) === 4) return true;                     // 拼车组合
+    if (d.multi_route_tip_type === 'carpool') return true;
+    if (Array.isArray(d.multi_price_list) && d.multi_price_list.length > 0) return true; // 未拼成/拼成
+    if (Array.isArray(d.carpool_seat_list) && d.carpool_seat_list.length > 0) return true;
+    if (NON_PASSENGER_RE.test(d.car_title || d.name || '')) return true;
+    return false;
+  }
+
+  // 从一个 layout/rec_layout 卡片解析出候选车型（可能多产品，如「更多品牌」聚合组）
   function extractFromLayout(layoutArray) {
     if (!Array.isArray(layoutArray)) return [];
     const results = [];
     for (const item of layoutArray) {
-      // 尝试多种价格来源：price 可能是展示文本（如 "~62.5起"），需要去除非数字字符
-      let price = null;
-
-      // 优先尝试 theme_data.price（通常是纯数字）
-      if (item.theme_data && item.theme_data.price != null) {
-        price = parseFloat(item.theme_data.price);
+      const groups = Array.isArray(item.groups) ? item.groups : [];
+      const pids = [];
+      for (const g of groups) {
+        if (Array.isArray(g.products)) pids.push(...g.products);
       }
-      // 其次尝试 price 字段，用正则提取数字
-      if (isNaN(price) || price <= 0) {
-        const rawPrice = item.price;
-        if (rawPrice != null) {
-          const match = String(rawPrice).match(/[\d.]+/);
-          if (match) price = parseFloat(match[0]);
-        }
-      }
-      // 最后从 groups 子项中取最低的 estimate_price
-      if (isNaN(price) || price <= 0) {
-        const groups = item.groups;
-        if (Array.isArray(groups)) {
-          for (const g of groups) {
-            const gp = parseFloat(g.price || g.estimate_price || g.fee_amount);
-            if (!isNaN(gp) && gp > 0 && (isNaN(price) || gp < price)) {
-              price = gp;
-            }
-          }
-        }
-      }
-      if (isNaN(price) || price <= 0) continue;
 
-      const catId = item.category_id;
-      const carType = categoryMap[catId] || item.sub_category_title || item.title || '';
+      if (pids.length === 0) {
+        // 老结构：卡片本身一个价 + 类别名
+        const price = parsePrice(item.theme_data?.price ?? item.price);
+        if (price == null) continue;
+        results.push({
+          price,
+          carType: categoryMap[item.category_id] || item.sub_category_title || item.title || '',
+          productId: null,
+          unbookable: false,
+        });
+        continue;
+      }
 
-      results.push({ price, carType, categoryId: catId });
+      for (const pid of pids) {
+        const d = detailByPid[pid];
+        // 价格优先取该产品在 estimate_data 里的一口价，其次卡片价
+        const price = parsePrice(d?.fee_amount ?? d?.price ?? item.theme_data?.price ?? item.price);
+        if (price == null) continue;
+        const carType = (d && (d.car_title || d.carTitle)) || categoryMap[item.category_id] || item.sub_category_title || '';
+        results.push({ price, carType, productId: pid, unbookable: isUnbookable(d) });
+      }
     }
     return results;
   }
 
-  // 2. 辅助函数：从 estimate_data（productId → 详情）中提取
-  function extractFromEstimateData(ed) {
-    if (!ed || typeof ed !== 'object') return [];
-    const results = [];
-    for (const [productId, detail] of Object.entries(ed)) {
-      // 滴滴 pMultiEstimatePriceV3 返回 fee_amount 字段（一口价金额）
-      const price = parseFloat(detail.fee_amount || detail.price || detail.estimate_price || detail.estimatePrice);
-      if (isNaN(price) || price <= 0) continue;
-      // 滴滴返回 car_title 作为车型名称
-      const carType = detail.car_title || detail.name || detail.product_name || detail.carType || `车型${productId}`;
-      results.push({ price, carType, productId });
-    }
-    return results;
+  function parsePrice(raw) {
+    if (raw == null) return null;
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n > 0) return n;
+    const m = String(raw).match(/[\d.]+/);
+    return m ? parseFloat(m[0]) : null;
   }
 
-  // 3. 优先 rec_layout（推荐），其次 layout（全部），最后 estimate_data
+  // 3. 优先 rec_layout（推荐），其次 layout（全部），最后 estimate_data 全量
   let allOptions = extractFromLayout(respData.rec_layout);
   if (allOptions.length === 0) {
     allOptions = extractFromLayout(respData.layout);
   }
   if (allOptions.length === 0) {
-    allOptions = extractFromEstimateData(respData.estimate_data);
+    // estimate_data 全量兜底（无 layout 结构时）
+    for (const [pid, d] of Object.entries(detailByPid)) {
+      const price = parsePrice(d.fee_amount || d.price || d.estimate_price || d.estimatePrice);
+      if (price == null) continue;
+      allOptions.push({
+        price,
+        carType: d.car_title || d.name || d.product_name || `车型${pid}`,
+        productId: pid,
+        unbookable: isUnbookable(d),
+      });
+    }
   }
 
   if (allOptions.length === 0) {
@@ -3183,11 +3261,41 @@ function parseDidiEstimateResponse(data) {
     return null;
   }
 
-  // 按价格升序排列
-  allOptions.sort((a, b) => a.price - b.price);
-  const best = allOptions[0];
+  // 4. 过滤出「实际可叫」档；全部被过滤时退回原候选（不因过滤而误报凭证过期）
+  const bookable = allOptions.filter(o => !o.unbookable);
+  const skippedCarpool = allOptions.length - bookable.length;
+  const pool = bookable.length ? bookable : allOptions;
 
-  return { ...best, allOptions };
+  // 按价格升序，取最便宜的可叫档
+  pool.sort((a, b) => a.price - b.price);
+  const best = pool[0];
+
+  if (skippedCarpool > 0) {
+    console.info(`[滴滴估价] 跳过 ${skippedCarpool} 个不可叫档（拼车/禁用/非客运），选中「${best.carType}」¥${best.price}`);
+  }
+
+  // 5. 区域叫车难度信号：应答率 + 预计等待时间
+  //    expect_params.answer_rate           — 应答率（0-100），越低越难叫到车
+  //    tab_extra_data.classify.duration    — 预计等待秒数（time_text 是其文本「18分钟」）
+  //    order_button_info.expect_info_text  — 兜底文本「应答率{38}%」
+  let answerRate = null;
+  const expectParams = respData.expect_params || {};
+  if (Number.isFinite(expectParams.answer_rate)) {
+    answerRate = Number(expectParams.answer_rate);
+  } else {
+    const m = String(respData.order_button_info?.expect_info_text || '').match(/应答率\{(\d+)\}/);
+    if (m) answerRate = Number(m[1]);
+  }
+  let waitMinutes = null;
+  const classify = respData.tab_extra_data?.classify;
+  if (classify && Number.isFinite(classify.duration)) {
+    waitMinutes = Math.round(Number(classify.duration) / 60);
+  } else if (classify && classify.time_text) {
+    const m = String(classify.time_text).match(/(\d+)\s*分钟/);
+    if (m) waitMinutes = Number(m[1]);
+  }
+
+  return { ...best, allOptions: pool, skippedCarpool, answerRate, waitMinutes };
 }
 
 // 调用服务端滴滴估价代理，返回 { cost, source, carType, allOptions, raw }
@@ -3300,6 +3408,8 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
         source: 'didi',
         carType: parsed.carType,
         allOptions: parsed.allOptions,
+        answerRate: parsed.answerRate,
+        waitMinutes: parsed.waitMinutes,
         raw: null,
       };
       _didiEstimateCache.set(cacheKey, { value, expiresAt: Date.now() + DIDI_ESTIMATE_CACHE_TTL_MS });
