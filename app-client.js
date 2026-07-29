@@ -814,6 +814,12 @@ function searchFullTaxi() {
         if (status === 'complete' && result.routes && result.routes.length > 0) {
           const route = result.routes[0];
           const distance = route.distance || 0;
+          // 距离太短步行更快，打车等待+起步价不划算
+          if (distance < TAXI_MIN_FULL_M) {
+            console.info(`[全程打车] 距离 ${Math.round(distance)}m < ${TAXI_MIN_FULL_M}m，跳过（步行更划算）`);
+            resolve([]);
+            return;
+          }
           const time = route.time || 0;
           const distanceKm = Math.round(distance / 100) / 10;
 
@@ -952,6 +958,10 @@ async function createEndpointVariants({
 
   if (walkDistance >= 500) {
     const taxiDistance = Math.max(directDistance * 1.15, 500);
+    // 打车距离太短不划算：等待时间 + 起步价 vs 步行 10 分钟
+    if (taxiDistance < TAXI_MIN_LEG_M) {
+      console.info(`[接驳打车] 距离 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过此段打车`);
+    } else {
     const drivingTime = Math.round(taxiDistance / Math.max(traffic.speedMps || 0, 5));
     const estimate = await estimateTaxi(taxiDistance, drivingTime, from, to, { fromName, toName });
     // 每一段独立估价，Didi 或本地兜底都会为这一段单独计算起步价。
@@ -963,6 +973,7 @@ async function createEndpointVariants({
       segment: { type: 'taxi', distance: taxiDistance, time: drivingTime + 5 * 60, fromStation: fromName, toStation: toName },
       mapLeg: { type: 'taxi', from, to },
     });
+    }
   }
 
   return variants;
@@ -1179,6 +1190,12 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     const taxiDistance = calculateDistance(origin, stationLngLat);
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
+    // 打车到站距离太短，步行更划算
+    if (taxiDistance < TAXI_MIN_LEG_M) {
+      console.info(`[打车+公交] 打车段 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过`);
+      return null;
+    }
+
     const taxiTimeSec = Math.round(taxiDistance / speedMps);
     const taxiEst = await estimateTaxi(taxiDistance, taxiTimeSec, origin, c.onStation.location);
     const taxiCost = taxiEst.cost;
@@ -1310,6 +1327,12 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const firstTaxiDistance = calculateDistance(origin, entryPoint);
     const secondTaxiDistance = calculateDistance(exitPoint, destination);
     if (firstTaxiDistance <= 0 || secondTaxiDistance <= 0) return null;
+
+    // 任一端打车距离太短，步行更划算
+    if (firstTaxiDistance < TAXI_MIN_LEG_M || secondTaxiDistance < TAXI_MIN_LEG_M) {
+      console.info(`[打车+公交+打车] 打车段 ${Math.round(firstTaxiDistance)}m / ${Math.round(secondTaxiDistance)}m 有低于 ${TAXI_MIN_LEG_M}m，跳过`);
+      return null;
+    }
 
     const firstTaxiSeconds = Math.round(firstTaxiDistance / speedMps);
     const secondTaxiSeconds = Math.round(secondTaxiDistance / speedMps);
@@ -1508,6 +1531,12 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
   );
   // 任何一步计算失败就丢弃这个候选
   if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
+
+  // 打车段距离太短，步行到终点更划算
+  if (taxiDistance < TAXI_MIN_LEG_M) {
+    console.info(`[公交+打车] 打车段 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过`);
+    return null;
+  }
 
   // 时间估算：公交耗时按占比 + 打车耗时（用 AMap 实时路况推算的速度）
   const transitTime = Math.round((plan.time || 0) / 60 * station.ratio);
@@ -3124,6 +3153,10 @@ const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
 
 // 叫车难度阈值（启发式）：应答率低于此或预计等待不短于此 → 判定该区域叫车较难
 const TAXI_DIFFICULTY = { lowAnswerRate: 60, longWaitMin: 15 };
+
+// 打车最小距离阈值：低于此距离步行更划算（全程打车 1000m，接驳打车 800m）
+const TAXI_MIN_FULL_M = 1000;
+const TAXI_MIN_LEG_M = 800;
 
 // 对可空数值取最值（null 视为缺失，不参与比较；全 null 返回 null）
 function minOrNull(a, b) {
