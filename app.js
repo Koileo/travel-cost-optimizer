@@ -14,27 +14,37 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
-// 预加载静态文件到内存，避免运行时读盘问题
+// 预加载静态文件到内存，运行时从磁盘回退
 const STATIC = {};
-['index.html','app-client.js','styles.css','sw.js','manifest.json'].forEach(name => {
+const STATIC_FILES = [
+  'index.html', 'styles.css', 'sw.js', 'manifest.json',
+  'app-client.js', 'app-client-entry.js',
+  'src/01-state.js', 'src/02-utils.js', 'src/03-algorithm.js',
+  'src/04-map.js', 'src/05-didi.js', 'src/06-route.js',
+  'src/07-ui.js', 'src/08-settings.js', 'src/09-sw.js',
+];
+STATIC_FILES.forEach(name => {
   try { STATIC[name] = fs.readFileSync(path.join(__dirname, name), 'utf-8'); }
   catch (_) { /* will try cwd below */ }
 });
 // Vercel 编译后 __dirname 可能变了，用 cwd 兜底
-if (Object.keys(STATIC).length < 5) {
-  ['index.html','app-client.js','styles.css','sw.js','manifest.json'].forEach(name => {
-    if (!STATIC[name]) {
-      try { STATIC[name] = fs.readFileSync(path.join(process.cwd(), name), 'utf-8'); } catch (_) {}
-    }
-  });
-}
+STATIC_FILES.forEach(name => {
+  if (!STATIC[name]) {
+    try { STATIC[name] = fs.readFileSync(path.join(process.cwd(), name), 'utf-8'); } catch (_) {}
+  }
+});
 
 function serveStatic(url, res) {
   const file = url === '/' ? 'index.html' : url.replace(/^\//, '').split('?')[0];
-  const content = STATIC[file];
+  let content = STATIC[file];
+  // 缓存未命中时尝试从磁盘读取（新文件或动态路径）
+  if (!content) {
+    try { content = fs.readFileSync(path.join(__dirname, file), 'utf-8'); }
+    catch (_) { try { content = fs.readFileSync(path.join(process.cwd(), file), 'utf-8'); } catch (_) {} }
+  }
   if (!content) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end(`404: ${file} (cached: ${Object.keys(STATIC).join(', ')})`);
+    return res.end(`404: ${file}`);
   }
   const ext = path.extname(file);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', 'Cache-Control': 'no-cache' });
