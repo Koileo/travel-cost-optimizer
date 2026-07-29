@@ -580,12 +580,13 @@ function isTaxiWorthIt(distanceMeters, { isFullTrip = false } = {}) {
   const penaltyMul = 1 + penalty.walkBonus;
   const effectiveWalkMin = walkTimeMin * penaltyMul;
 
-  // 默认阈值：步行超过此分钟数 → 打车值得
-  let thresholdMin = isFullTrip ? 12 : 10;
+  // 默认阈值：对应原 TAXI_MIN_FULL_M=1000m / TAXI_MIN_LEG_M=800m
+  // 步行 5 km/h ≈ 83 m/min，1000m≈12min，800m≈9.6min
+  let thresholdMin = isFullTrip ? 12 : 9.6;
 
-  // 恶劣天气降低阈值
-  if (penalty.walkBonus >= 2.0)       thresholdMin = 4;  // 极寒/酷热/暴雨 → 走 4 分钟就打车
-  else if (penalty.walkBonus >= 1.5)  thresholdMin = 6;  // 寒冷/炎热/大雨
+  // 恶劣天气降低阈值（步行有效时间 = 实际时间 × (1+walkBonus)）
+  if (penalty.walkBonus >= 2.0)       thresholdMin = 5;  // 极寒/酷热/暴雨
+  else if (penalty.walkBonus >= 1.5)  thresholdMin = 6.5;// 寒冷/炎热/大雨
   else if (penalty.walkBonus >= 0.5)  thresholdMin = 8;  // 偏冷/偏热/中雨
 
   const worthIt = effectiveWalkMin >= thresholdMin;
@@ -875,29 +876,46 @@ function extractTrafficFactor(taxiRoute) {
 }
 
 // 针对单个打车段的实时驾车时间查询（含路况），用于混合方案中的每段打车
+// 针对单个打车段的实时驾车时间查询（含路况），用于混合方案中的每段打车
 // 替代之前所有段共用一个 speedMps 的近似算法
+
+// AMap.Driving 并发限制（避免同时发起过多请求导致失败）
+let _drivingInFlight = 0;
+const DRIVING_MAX_CONCURRENT = 3;
+
 async function getDrivingTime(from, to, fallbackSpeedMps = 8.3) {
-  return new Promise((resolve) => {
-    AMap.plugin('AMap.Driving', () => {
-      const driving = new AMap.Driving({ panel: null });
-      const origin = Array.isArray(from) ? new AMap.LngLat(from[0], from[1]) : from;
-      const destination = Array.isArray(to) ? new AMap.LngLat(to[0], to[1]) : to;
-      driving.search(origin, destination, (status, result) => {
-        if (status === 'complete' && result.routes && result.routes.length > 0) {
-          const route = result.routes[0];
-          const dist = route.distance || 0;
-          const time = route.time || 0;
-          if (dist > 0 && time > 0) {
-            resolve({ time, distance: dist, speedMps: dist / time });
-            return;
+  // 并发控制：排队等待
+  while (_drivingInFlight >= DRIVING_MAX_CONCURRENT) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  _drivingInFlight++;
+
+  try {
+    return await new Promise((resolve) => {
+      AMap.plugin('AMap.Driving', () => {
+        const driving = new AMap.Driving({ panel: null });
+        const origin = Array.isArray(from) ? new AMap.LngLat(from[0], from[1]) : from;
+        const destination = Array.isArray(to) ? new AMap.LngLat(to[0], to[1]) : to;
+        driving.search(origin, destination, (status, result) => {
+          if (status === 'complete' && result.routes && result.routes.length > 0) {
+            const route = result.routes[0];
+            const dist = route.distance || 0;
+            const time = route.time || 0;
+            if (dist > 0 && time > 0) {
+              resolve({ time, distance: dist, speedMps: dist / time });
+              return;
+            }
           }
-        }
-        // 回退：直线距离 / 默认速度
-        const dist = calculateDistance(from, to);
-        resolve({ time: Math.round(dist / fallbackSpeedMps), distance: dist, speedMps: fallbackSpeedMps });
+          // 回退：直线距离 × 1.3 近似路网距离，默认速度算时间
+          const straightDist = calculateDistance(from, to);
+          const dist = Math.round(straightDist * 1.3);
+          resolve({ time: Math.round(dist / fallbackSpeedMps), distance: dist, speedMps: fallbackSpeedMps });
+        });
       });
     });
-  });
+  } finally {
+    _drivingInFlight--;
+  }
 }
 
 function searchTransitPlans() {
@@ -945,6 +963,7 @@ function searchFullTaxi() {
           const distance = route.distance || 0;
           // 综合步行时间+天气判断打车是否值得
           const taxiCheck = isTaxiWorthIt(distance, { isFullTrip: true });
+          console.info(`[全程打车] AMap 驾车距离 ${Math.round(distance)}m，打车判断: ${taxiCheck.worthIt ? '值得' : '不值得'}（步行${taxiCheck.walkTimeMin}min / 阈值${taxiCheck.thresholdMin}min${taxiCheck.reason ? ' ' + taxiCheck.reason : ''}）`);
           if (!taxiCheck.worthIt) {
             resolve([]);
             return;
