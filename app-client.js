@@ -845,6 +845,32 @@ function extractTrafficFactor(taxiRoute) {
   return { speedMps: distance / time, distance, time };
 }
 
+// 针对单个打车段的实时驾车时间查询（含路况），用于混合方案中的每段打车
+// 替代之前所有段共用一个 speedMps 的近似算法
+async function getDrivingTime(from, to, fallbackSpeedMps = 8.3) {
+  return new Promise((resolve) => {
+    AMap.plugin('AMap.Driving', () => {
+      const driving = new AMap.Driving({ panel: null });
+      const origin = Array.isArray(from) ? new AMap.LngLat(from[0], from[1]) : from;
+      const destination = Array.isArray(to) ? new AMap.LngLat(to[0], to[1]) : to;
+      driving.search(origin, destination, (status, result) => {
+        if (status === 'complete' && result.routes && result.routes.length > 0) {
+          const route = result.routes[0];
+          const dist = route.distance || 0;
+          const time = route.time || 0;
+          if (dist > 0 && time > 0) {
+            resolve({ time, distance: dist, speedMps: dist / time });
+            return;
+          }
+        }
+        // 回退：直线距离 / 默认速度
+        const dist = calculateDistance(from, to);
+        resolve({ time: Math.round(dist / fallbackSpeedMps), distance: dist, speedMps: fallbackSpeedMps });
+      });
+    });
+  });
+}
+
 function searchTransitPlans() {
   return new Promise((resolve) => {
     transfer.search(startPOI.location, endPOI.location, (status, result) => {
@@ -1031,12 +1057,14 @@ async function createEndpointVariants({
   }
 
   if (walkDistance >= 500) {
-    const taxiDistance = Math.max(directDistance * 1.15, 500);
+    // 每段打车独立查询实时驾车时间（含路况），不再共用全程打车的 speedMps
+    const driving = await getDrivingTime(from, to, traffic.speedMps || 8.3);
+    const taxiDistance = driving.distance;
     // 打车距离太短不划算：等待时间 + 起步价 vs 步行 10 分钟
     if (taxiDistance < TAXI_MIN_LEG_M) {
-      console.info(`[接驳打车] 距离 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过此段打车`);
+      console.info(`[接驳打车] 路网距离 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过此段打车`);
     } else {
-    const drivingTime = Math.round(taxiDistance / Math.max(traffic.speedMps || 0, 5));
+    const drivingTime = driving.time;
     const estimate = await estimateTaxi(taxiDistance, drivingTime, from, to, { fromName, toName });
     const carTypeSuffix = estimate.carType ? ` · ${estimate.carType}` : '';
     // 每一段独立估价，Didi 或本地兜底都会为这一段单独计算起步价。
@@ -1047,6 +1075,7 @@ async function createEndpointVariants({
       answerRate: estimate.answerRate, didiDurationMinutes: estimate.didiDurationMinutes,
       segment: { type: 'taxi', distance: taxiDistance, time: drivingTime + 5 * 60, fromStation: fromName, toStation: toName },
       mapLeg: { type: 'taxi', from, to },
+      actualSpeedMps: driving.speedMps,
     });
     }
   }
@@ -1145,7 +1174,12 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
             transitCost: personalCost,
             taxiLegs: [access.mapLeg, egress.mapLeg].filter(Boolean),
             endpointLegs: [access.mapLeg, egress.mapLeg].filter(Boolean),
-            trafficSpeedKmh: taxiSegments ? Math.round((traffic.speedMps || 8.3) * 3.6) : null,
+            trafficSpeedKmh: taxiSegments
+              ? Math.round(Math.min(
+                  access.actualSpeedMps || traffic.speedMps || 8.3,
+                  egress.actualSpeedMps || traffic.speedMps || 8.3
+                ) * 3.6)
+              : null,
           },
         });
       });
@@ -1258,10 +1292,12 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     candidates.push({ plan, segments, firstSeg, onStation, firstTransitIdx, walkDistance });
   });
 
-  // 异步估算每个候选的 taxi 价格
+  // 异步估算每个候选的 taxi 价格（每段独立 Driving.search，不用统一的 speedMps）
   const builtHybrids = await Promise.all(candidates.map(async c => {
     const stationLngLat = [c.onStation.location.lng, c.onStation.location.lat];
-    const taxiDistance = calculateDistance(origin, stationLngLat);
+
+    const driving = await getDrivingTime(origin, stationLngLat, speedMps);
+    const taxiDistance = driving.distance;
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
     // 打车到站距离太短，步行更划算
@@ -1270,13 +1306,13 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       return null;
     }
 
-    const taxiTimeSec = Math.round(taxiDistance / speedMps);
+    const taxiTimeSec = driving.time;
     const taxiEst = await estimateTaxi(taxiDistance, taxiTimeSec, origin, c.onStation.location);
     const taxiCost = taxiEst.cost;
     if (!isFinite(taxiCost)) return null;
 
     // 时间：打车 + 剩余的公交时间（包含后续所有段）
-    const taxiTime = Math.round(taxiDistance / speedMps / 60);
+    const taxiTime = Math.round(taxiTimeSec / 60);
     const remainingTransitTime = Math.round(
       c.segments.slice(c.firstTransitIdx).reduce((sum, s) => sum + (s.time || 0), 0) / 60
     );
@@ -1340,7 +1376,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
         taxiDistance,
         taxiCost,
         transitCost,
-        trafficSpeedKmh: Math.round(speedMps * 3.6),
+        trafficSpeedKmh: Math.round(driving.speedMps * 3.6),
       },
     };
   }));
@@ -1399,8 +1435,13 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
   const routes = await Promise.all(candidates.map(async candidate => {
     const entryPoint = [candidate.entry.location.lng, candidate.entry.location.lat];
     const exitPoint = [candidate.exit.location.lng, candidate.exit.location.lat];
-    const firstTaxiDistance = calculateDistance(origin, entryPoint);
-    const secondTaxiDistance = calculateDistance(exitPoint, destination);
+    // 两段打车分别独立查询实时驾车时间（含各自路况）
+    const [driving1, driving2] = await Promise.all([
+      getDrivingTime(origin, entryPoint, speedMps),
+      getDrivingTime(exitPoint, destination, speedMps),
+    ]);
+    const firstTaxiDistance = driving1.distance;
+    const secondTaxiDistance = driving2.distance;
     if (firstTaxiDistance <= 0 || secondTaxiDistance <= 0) return null;
 
     // 任一端打车距离太短，步行更划算
@@ -1409,8 +1450,8 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       return null;
     }
 
-    const firstTaxiSeconds = Math.round(firstTaxiDistance / speedMps);
-    const secondTaxiSeconds = Math.round(secondTaxiDistance / speedMps);
+    const firstTaxiSeconds = driving1.time;
+    const secondTaxiSeconds = driving2.time;
     const [firstEstimate, secondEstimate] = await Promise.all([
       estimateTaxi(firstTaxiDistance, firstTaxiSeconds, origin, candidate.entry.location, {
         fromName: startPOI.name,
@@ -1496,7 +1537,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
           { from: origin, to: entryPoint },
           { from: exitPoint, to: destination },
         ],
-        trafficSpeedKmh: Math.round(speedMps * 3.6),
+        trafficSpeedKmh: Math.round(Math.min(driving1.speedMps, driving2.speedMps) * 3.6),
       },
     };
   }));
@@ -1602,10 +1643,13 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     }
   }
 
-  const taxiDistance = calculateDistance(
+  // 独立查询实时驾车时间（含路况），不用全程打车的统一 speedMps
+  const driving = await getDrivingTime(
     [station.location.lng, station.location.lat],
-    endLngLat
+    endLngLat,
+    traffic.speedMps || 8.3
   );
+  const taxiDistance = driving.distance;
   // 任何一步计算失败就丢弃这个候选
   if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
@@ -1615,22 +1659,21 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     return null;
   }
 
-  // 时间估算：公交耗时按占比 + 打车耗时（用 AMap 实时路况推算的速度）
+  // 时间：公交耗时按占比 + 打车耗时（实时路况）
   const transitTime = Math.round((plan.time || 0) / 60 * station.ratio);
-  const speedMps = traffic.speedMps > 0 ? traffic.speedMps : 8.3; // 兜底 30 km/h
-  const taxiTime = Math.round(taxiDistance / speedMps / 60);
+  const taxiTime = Math.round(driving.time / 60);
   const totalTime = transitTime + taxiTime;
   if (!isFinite(totalTime) || totalTime <= 0) return null;
 
   // 异步调用滴滴拿真实价格
-  const taxiEst = await estimateTaxi(taxiDistance, taxiTime * 60, station.location, endPOI.location);
+  const taxiEst = await estimateTaxi(taxiDistance, driving.time, station.location, endPOI.location);
   const taxiCost = taxiEst.cost;
   if (!isFinite(taxiCost)) return null;
 
   const totalCost = transitCost + taxiCost;
   const taxiDistanceKm = Math.round(taxiDistance / 100) / 10;
 
-  const speedKmh = Math.round(speedMps * 3.6);
+  const speedKmh = Math.round(driving.speedMps * 3.6);
   const stationLineInfo = parseLineInfo(station.lineName, station.transitMode);
   const stationDisplay = stationLineInfo.direction
     ? `${stationLineInfo.line} · ${stationLineInfo.direction}`
