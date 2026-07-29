@@ -569,6 +569,35 @@ function getWeatherPenalty(weather) {
   };
 }
 
+// 打车是否值得：综合步行时间 + 天气，替代硬编码距离阈值
+// 步行速度 ~5 km/h ≈ 83 m/min，天气越差阈值越低
+function isTaxiWorthIt(distanceMeters, { isFullTrip = false } = {}) {
+  const weather = _currentWeather;
+  const walkSpeedMperMin = 83; // 5 km/h
+  const walkTimeMin = distanceMeters / walkSpeedMperMin;
+
+  const penalty = getWeatherPenalty(weather);
+  const penaltyMul = 1 + penalty.walkBonus;
+  const effectiveWalkMin = walkTimeMin * penaltyMul;
+
+  // 默认阈值：步行超过此分钟数 → 打车值得
+  let thresholdMin = isFullTrip ? 12 : 10;
+
+  // 恶劣天气降低阈值
+  if (penalty.walkBonus >= 2.0)       thresholdMin = 4;  // 极寒/酷热/暴雨 → 走 4 分钟就打车
+  else if (penalty.walkBonus >= 1.5)  thresholdMin = 6;  // 寒冷/炎热/大雨
+  else if (penalty.walkBonus >= 0.5)  thresholdMin = 8;  // 偏冷/偏热/中雨
+
+  const worthIt = effectiveWalkMin >= thresholdMin;
+
+  if (!worthIt) {
+    const reason = penalty.label ? `（${penalty.label}也不值得）` : '';
+    console.info(`[打车判断] ${Math.round(distanceMeters)}m → 步行约 ${Math.round(effectiveWalkMin)} 分钟 < ${thresholdMin} 分钟阈值${reason}，打车不划算`);
+  }
+
+  return { worthIt, walkTimeMin: Math.round(effectiveWalkMin), reason: penalty.label, thresholdMin };
+}
+
 // 舒适成本越低越好：出行暴露时间 + 候车/换乘负担。
 function getComfortCost(route) {
   const segments = Array.isArray(route?.segments) && route.segments.length
@@ -914,9 +943,9 @@ function searchFullTaxi() {
         if (status === 'complete' && result.routes && result.routes.length > 0) {
           const route = result.routes[0];
           const distance = route.distance || 0;
-          // 距离太短步行更快，打车等待+起步价不划算
-          if (distance < TAXI_MIN_FULL_M) {
-            console.info(`[全程打车] 距离 ${Math.round(distance)}m < ${TAXI_MIN_FULL_M}m，跳过（步行更划算）`);
+          // 综合步行时间+天气判断打车是否值得
+          const taxiCheck = isTaxiWorthIt(distance, { isFullTrip: true });
+          if (!taxiCheck.worthIt) {
             resolve([]);
             return;
           }
@@ -1060,9 +1089,10 @@ async function createEndpointVariants({
     // 每段打车独立查询实时驾车时间（含路况），不再共用全程打车的 speedMps
     const driving = await getDrivingTime(from, to, traffic.speedMps || 8.3);
     const taxiDistance = driving.distance;
-    // 打车距离太短不划算：等待时间 + 起步价 vs 步行 10 分钟
-    if (taxiDistance < TAXI_MIN_LEG_M) {
-      console.info(`[接驳打车] 路网距离 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过此段打车`);
+    // 综合步行时间+天气判断打车是否值得
+    const taxiCheck = isTaxiWorthIt(taxiDistance);
+    if (!taxiCheck.worthIt) {
+      console.info(`[接驳打车] 跳过此段打车`);
     } else {
     const drivingTime = driving.time;
     const estimate = await estimateTaxi(taxiDistance, drivingTime, from, to, { fromName, toName });
@@ -1300,9 +1330,9 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     const taxiDistance = driving.distance;
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
-    // 打车到站距离太短，步行更划算
-    if (taxiDistance < TAXI_MIN_LEG_M) {
-      console.info(`[打车+公交] 打车段 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过`);
+    // 综合步行时间+天气判断打车是否值得
+    if (!isTaxiWorthIt(taxiDistance).worthIt) {
+      console.info(`[打车+公交] 跳过`);
       return null;
     }
 
@@ -1444,9 +1474,9 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const secondTaxiDistance = driving2.distance;
     if (firstTaxiDistance <= 0 || secondTaxiDistance <= 0) return null;
 
-    // 任一端打车距离太短，步行更划算
-    if (firstTaxiDistance < TAXI_MIN_LEG_M || secondTaxiDistance < TAXI_MIN_LEG_M) {
-      console.info(`[打车+公交+打车] 打车段 ${Math.round(firstTaxiDistance)}m / ${Math.round(secondTaxiDistance)}m 有低于 ${TAXI_MIN_LEG_M}m，跳过`);
+    // 综合步行时间+天气判断任一端打车是否值得
+    if (!isTaxiWorthIt(firstTaxiDistance).worthIt || !isTaxiWorthIt(secondTaxiDistance).worthIt) {
+      console.info(`[打车+公交+打车] 有一段不划算，跳过`);
       return null;
     }
 
@@ -1653,9 +1683,9 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
   // 任何一步计算失败就丢弃这个候选
   if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
-  // 打车段距离太短，步行到终点更划算
-  if (taxiDistance < TAXI_MIN_LEG_M) {
-    console.info(`[公交+打车] 打车段 ${Math.round(taxiDistance)}m < ${TAXI_MIN_LEG_M}m，跳过`);
+  // 综合步行时间+天气判断打车是否值得
+  if (!isTaxiWorthIt(taxiDistance).worthIt) {
+    console.info(`[公交+打车] 跳过`);
     return null;
   }
 
@@ -3271,7 +3301,8 @@ const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
 // 叫车难度阈值（启发式）：应答率低于此或预计等待不短于此 → 判定该区域叫车较难
 const TAXI_DIFFICULTY = { lowAnswerRate: 60 };
 
-// 打车最小距离阈值：低于此距离步行更划算（全程打车 1000m，接驳打车 800m）
+// 打车最小距离参考值（非硬阈值，实际由 isTaxiWorthIt 综合步行时间+天气判断）
+// 全程 ~1000m → 步行约 12 分钟，接驳段 ~800m → 步行约 10 分钟
 const TAXI_MIN_FULL_M = 1000;
 const TAXI_MIN_LEG_M = 800;
 
