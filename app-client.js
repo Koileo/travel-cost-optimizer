@@ -1135,9 +1135,10 @@ async function createEndpointVariants({
 
 // 公交主干两端可分别接步行、骑行或打车；最多允许两段打车。
 async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = null) {
-  if (!result?.plans?.length) return [];
+  if (!result?.plans?.length) { console.info('[混合-接驳] 无公交方案'); return []; }
   const origin = [startPOI.location.lng, startPOI.location.lat];
   const destination = [endPOI.location.lng, endPOI.location.lat];
+  console.info(`[混合-接驳] 开始处理 ${Math.min(4, result.plans.length)} 个公交方案`);
 
   const planRoutes = await Promise.all(result.plans.slice(0, 4).map(async (plan, planIndex) => {
     const segments = plan.segments || [];
@@ -1150,7 +1151,10 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
     const lastIndex = transitIndexes[transitIndexes.length - 1].index;
     const entry = segments[firstIndex].transit?.on_station;
     const exit = segments[lastIndex].transit?.off_station;
-    if (!isValidLocation(entry?.location) || !isValidLocation(exit?.location)) return [];
+    if (!isValidLocation(entry?.location) || !isValidLocation(exit?.location)) {
+      console.info(`[混合-接驳] 方案${planIndex} 出入口坐标无效`);
+      return [];
+    }
 
     const leading = segments.slice(0, firstIndex);
     const middleRaw = segments.slice(firstIndex, lastIndex + 1);
@@ -1161,7 +1165,11 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
     const trailingTime = trailing.reduce((sum, seg) => sum + (seg.time || 0), 0);
     const middleTime = middleRaw.reduce((sum, seg) => sum + (seg.time || 0), 0);
     const middleDistance = middleRaw.reduce((sum, seg) => sum + (seg.distance || 0), 0);
-    if (middleDistance < 1000) return [];
+    if (middleDistance < 1000) {
+      console.info(`[混合-接驳] 方案${planIndex} 公交段仅${Math.round(middleDistance)}m，跳过`);
+      return [];
+    }
+    console.info(`[混合-接驳] 方案${planIndex} 步行: 前${Math.round(leadingDistance)}m 后${Math.round(trailingDistance)}m，公交${Math.round(middleDistance)}m`);
 
     // 从 TransitDetails 获取结构化的出入口名称
     const entranceGate = segments[firstIndex].transit?.entrance?.name || '';
@@ -1245,7 +1253,8 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   if (!isValidLocation(startPOI && startPOI.location) || !isValidLocation(endPOI && endPOI.location)) {
     return [];
   }
-  if (!result) return [];
+  if (!result) { console.info('[公交→打车] 无公交结果'); return []; }
+  console.info('[公交→打车] 开始收集下车站点候选');
 
   // 遍历前 2 个公交方案，收集所有真实的公交/地铁下车站
   const candidates = [];
@@ -1273,9 +1282,10 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   }
 
   if (candidates.length === 0) {
-    console.log('[hybrid] no transfer station candidates found');
+    console.info('[公交→打车] 未找到合适的下车站点（所有站点步行<500m或坐标无效）');
     return [];
   }
+  console.info(`[公交→打车] 收集到 ${candidates.length} 个下车站候选`);
 
   // 算出每个候选站点的「公交累计 + 打车到终点」成本
   const hybrids = (await Promise.all(
@@ -1286,7 +1296,7 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
     .sort((a, b) => a.cost - b.cost)
     .slice(0, 5);
 
-  console.log(`[hybrid] candidates=${candidates.length}, taxiThreshold=${fullTaxiCost.toFixed(2)}, kept=${hybrids.length}`);
+  console.info(`[公交→打车] 候选${candidates.length}个 → 保留${hybrids.length}条（门槛:全程打车¥${fullTaxiCost.toFixed(2)}）`);
 
   return hybrids;
 }
@@ -1297,7 +1307,8 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
   if (!isValidLocation(startPOI && startPOI.location) || !isValidLocation(endPOI && endPOI.location)) {
     return [];
   }
-  if (!result) return [];
+  if (!result) { console.info('[打车→公交] 无公交结果'); return []; }
+  console.info('[打车→公交] 开始搜索起点到最近地铁站的打车方案');
 
   const origin = [startPOI.location.lng, startPOI.location.lat];
   const endLngLat = [endPOI.location.lng, endPOI.location.lat];
@@ -1341,6 +1352,8 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
 
     candidates.push({ plan, segments, firstSeg, onStation, firstTransitIdx, walkDistance });
   });
+
+  console.info(`[打车→公交] 收集到 ${candidates.length} 个地铁站候选（步行≥800m）`);
 
   // 异步估算每个候选的 taxi 价格（每段独立 Driving.search，不用统一的 speedMps）
   const builtHybrids = await Promise.all(candidates.map(async c => {
@@ -1431,17 +1444,18 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     };
   }));
 
-  return builtHybrids
-    .filter(Boolean)
-    .sort((a, b) => a.cost - b.cost)
-    .slice(0, 4);
+  const kept = builtHybrids.filter(Boolean).sort((a, b) => a.cost - b.cost).slice(0, 4);
+  console.info(`[打车→公交] 最终保留 ${kept.length} 条`);
+  return kept;
 }
 
 // 类别 5：打车接驳公共交通，再打车到终点。
 // 只替换公交方案两端较长的步行段，公交换乘结构保持不变。
 async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null, fullTaxiCost = null) {
   if (!result || !Array.isArray(result.plans)) return [];
+  if (!result) { console.info('[双打车] 无公交结果'); return []; }
   if (!isValidLocation(startPOI?.location) || !isValidLocation(endPOI?.location)) return [];
+  console.info('[双打车] 开始搜索前后双打车方案');
 
   const speedMps = traffic.speedMps > 0 ? traffic.speedMps : 8.3;
   const origin = [startPOI.location.lng, startPOI.location.lat];
@@ -1593,7 +1607,9 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     };
   }));
 
-  return routes.filter(Boolean).sort((a, b) => getDisplayCost(a) - getDisplayCost(b)).slice(0, 4);
+  const kept = routes.filter(Boolean).sort((a, b) => getDisplayCost(a) - getDisplayCost(b)).slice(0, 4);
+  console.info(`[双打车] 最终保留 ${kept.length} 条`);
+  return kept;
 }
 
 // 检测打车路线中的拥堵路段
