@@ -14,25 +14,21 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
-// 预加载静态文件到内存，运行时从磁盘回退
+// 预加载静态文件到内存（自动发现 .js/.css/.html 文件）
 const STATIC = {};
-const STATIC_FILES = [
-  'index.html', 'styles.css', 'sw.js', 'manifest.json',
-  'app-client.js', 'app-client-entry.js',
-  'src/01-state.js', 'src/02-utils.js', 'src/03-algorithm.js',
-  'src/04-map.js', 'src/05-didi.js', 'src/06-route.js',
-  'src/07-ui.js', 'src/08-settings.js', 'src/09-sw.js',
-];
-STATIC_FILES.forEach(name => {
-  try { STATIC[name] = fs.readFileSync(path.join(__dirname, name), 'utf-8'); }
-  catch (_) { /* will try cwd below */ }
-});
-// Vercel 编译后 __dirname 可能变了，用 cwd 兜底
-STATIC_FILES.forEach(name => {
-  if (!STATIC[name]) {
-    try { STATIC[name] = fs.readFileSync(path.join(process.cwd(), name), 'utf-8'); } catch (_) {}
-  }
-});
+function preloadDir(dir) {
+  try {
+    fs.readdirSync(dir).forEach(f => {
+      const full = path.join(dir, f);
+      const ext = path.extname(f);
+      if (['.js','.css','.html','.json','.svg','.webmanifest'].includes(ext) && !STATIC[f]) {
+        try { STATIC[f] = fs.readFileSync(full, 'utf-8'); } catch (_) {}
+      }
+    });
+  } catch (_) {}
+}
+preloadDir(__dirname);
+preloadDir(process.cwd());
 
 function serveStatic(url, res) {
   const file = url === '/' ? 'index.html' : url.replace(/^\//, '').split('?')[0];
