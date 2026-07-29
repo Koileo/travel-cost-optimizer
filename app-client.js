@@ -817,6 +817,7 @@ async function searchRoutes() {
       searchTaxiTransitTaxi(traffic, transitResult, fullTaxiCost),
     ]);
     const hybridRoutes = [...multimodalRoutes, ...busThenTaxiRoutes, ...taxiToTransitRoutes, ...taxiTransitTaxiRoutes];
+    console.info(`[路线汇总] 混合方案: 接驳${multimodalRoutes.length} + 公交→打车${busThenTaxiRoutes.length} + 打车→公交${taxiToTransitRoutes.length} + 双打车${taxiTransitTaxiRoutes.length} = ${hybridRoutes.length}条，全程打车${taxiRoutes.length}条，公交${transitRoutes.length}条`);
     allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
       .filter(route => countTaxiSegments(route) <= 2);
 
@@ -1110,8 +1111,8 @@ async function createEndpointVariants({
     const taxiDistance = driving.distance;
     // 综合步行时间+天气判断打车是否值得
     const taxiCheck = isTaxiWorthIt(taxiDistance);
+    console.info(`[接驳打车] ${side}端 路网${Math.round(taxiDistance)}m (直線${Math.round(calculateDistance(from,to))}m)，判断: ${taxiCheck.worthIt ? '值得' : '跳过'}（步行${taxiCheck.walkTimeMin}min/阈值${taxiCheck.thresholdMin}min）`);
     if (!taxiCheck.worthIt) {
-      console.info(`[接驳打车] 跳过此段打车`);
     } else {
     const drivingTime = driving.time;
     const estimate = await estimateTaxi(taxiDistance, drivingTime, from, to, { fromName, toName });
@@ -1350,13 +1351,13 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
     // 综合步行时间+天气判断打车是否值得
-    if (!isTaxiWorthIt(taxiDistance).worthIt) {
-      console.info(`[打车+公交] 跳过`);
-      return null;
-    }
+    const taxiCheck = isTaxiWorthIt(taxiDistance);
+    console.info(`[打车+公交] 到${c.onStation.name} 路网${Math.round(taxiDistance)}m，判断: ${taxiCheck.worthIt ? '值得' : '跳过'}（步行${taxiCheck.walkTimeMin}min/阈值${taxiCheck.thresholdMin}min）`);
+    if (!taxiCheck.worthIt) return null;
 
     const taxiTimeSec = driving.time;
     const taxiEst = await estimateTaxi(taxiDistance, taxiTimeSec, origin, c.onStation.location);
+    console.info(`[打车+公交] ${c.onStation.name} Didi结果: ${taxiEst.source==='didi' ? '¥'+taxiEst.cost+' · '+taxiEst.carType : '本地估算 ¥'+taxiEst.cost}`);
     const taxiCost = taxiEst.cost;
     if (!isFinite(taxiCost)) return null;
 
@@ -1494,10 +1495,10 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     if (firstTaxiDistance <= 0 || secondTaxiDistance <= 0) return null;
 
     // 综合步行时间+天气判断任一端打车是否值得
-    if (!isTaxiWorthIt(firstTaxiDistance).worthIt || !isTaxiWorthIt(secondTaxiDistance).worthIt) {
-      console.info(`[打车+公交+打车] 有一段不划算，跳过`);
-      return null;
-    }
+    const check1 = isTaxiWorthIt(firstTaxiDistance);
+    const check2 = isTaxiWorthIt(secondTaxiDistance);
+    console.info(`[打车+公交+打车] 前端${Math.round(firstTaxiDistance)}m ${check1.worthIt?'✓':'✗'} 后端${Math.round(secondTaxiDistance)}m ${check2.worthIt?'✓':'✗'}（步行${check1.walkTimeMin}/${check2.walkTimeMin}min 阈值${check1.thresholdMin}min）`);
+    if (!check1.worthIt || !check2.worthIt) return null;
 
     const firstTaxiSeconds = driving1.time;
     const secondTaxiSeconds = driving2.time;
@@ -1511,6 +1512,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
         toName: endPOI.name,
       }),
     ]);
+    console.info(`[打车+公交+打车] Didi: 前端 ${firstEstimate.source==='didi' ? '¥'+firstEstimate.cost+'·'+firstEstimate.carType : '本地¥'+firstEstimate.cost} | 后端 ${secondEstimate.source==='didi' ? '¥'+secondEstimate.cost+'·'+secondEstimate.carType : '本地¥'+secondEstimate.cost}`);
 
     const taxiCost = firstEstimate.cost + secondEstimate.cost;
     const transitCost = candidate.plan.cost || 2;
@@ -1703,10 +1705,9 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
   if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
   // 综合步行时间+天气判断打车是否值得
-  if (!isTaxiWorthIt(taxiDistance).worthIt) {
-    console.info(`[公交+打车] 跳过`);
-    return null;
-  }
+  const taxiCheck = isTaxiWorthIt(taxiDistance);
+  console.info(`[公交+打车] ${station.name}→终点 路网${Math.round(taxiDistance)}m，判断: ${taxiCheck.worthIt ? '值得' : '跳过'}（步行${taxiCheck.walkTimeMin}min/阈值${taxiCheck.thresholdMin}min）`);
+  if (!taxiCheck.worthIt) return null;
 
   // 时间：公交耗时按占比 + 打车耗时（实时路况）
   const transitTime = Math.round((plan.time || 0) / 60 * station.ratio);
@@ -1716,6 +1717,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
 
   // 异步调用滴滴拿真实价格
   const taxiEst = await estimateTaxi(taxiDistance, driving.time, station.location, endPOI.location);
+  console.info(`[公交+打车] ${station.name}→终点 Didi: ${taxiEst.source==='didi' ? '¥'+taxiEst.cost+'·'+taxiEst.carType : '本地估算¥'+taxiEst.cost}`);
   const taxiCost = taxiEst.cost;
   if (!isFinite(taxiCost)) return null;
 
