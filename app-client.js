@@ -827,7 +827,7 @@ function searchFullTaxi() {
               category: 'taxi',
               type: 'taxi',
               cost: Math.round(taxiEst.cost * 100) / 100,
-              time: Math.round(time / 60),
+              time: Math.round(time / 60) + (taxiEst.waitMinutes || 0),
               distance,
               segments: [{ type: 'taxi', distance, time }],
               description: `🚕 全程打车 ${distanceKm} km${carTypeLabel}`,
@@ -1045,11 +1045,14 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
           id: `multimodal-${planIndex}-${access.type}-${egress.type}`,
           category: 'hybrid', type: 'hybrid', direction: 'multimodal',
           cost: Math.round(totalCost * 100) / 100,
-          time: Math.max(1, Math.round((access.time + middleTime + egress.time) / 60)),
+          time: Math.max(1, Math.round((access.time + middleTime + egress.time) / 60)
+            + (access.waitMinutes || 0) + (egress.waitMinutes || 0)),
           distance: access.distance + middleDistance + egress.distance,
           segments: detailSegments,
           description: `${access.icon} ${access.label}到 ${entry.name} → ${transitLabels.join(' → ')} → ${egress.icon} ${egress.label}到终点`,
           dataSource,
+          answerRate: minOrNull(access.answerRate, egress.answerRate),
+          waitMinutes: maxOrNull(access.waitMinutes, egress.waitMinutes),
           raw: {
             segments: middleRaw,
             taxiCost,
@@ -1232,7 +1235,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       type: 'hybrid',
       direction: 'taxi-to-transit',
       cost: Math.round(totalCost * 100) / 100,
-      time: totalTime,
+      time: totalTime + (taxiEst.waitMinutes || 0),
       distance: taxiDistance + (c.plan.distance || 0),
       segments: detailSegments,
       description: desc,
@@ -1373,7 +1376,8 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       type: 'hybrid',
       direction: 'taxi-transit-taxi',
       cost: Math.round(totalCost * 100) / 100,
-      time: Math.max(1, Math.round((firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds) / 60)),
+      time: Math.max(1, Math.round((firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds) / 60)
+        + (firstEstimate.waitMinutes || 0) + (secondEstimate.waitMinutes || 0)),
       distance: firstTaxiDistance + middleRawSegments.reduce((sum, seg) => sum + (seg.distance || 0), 0) + secondTaxiDistance,
       segments: detailSegments,
       description: `🚕 到 ${candidate.entry.name} → ${transitLabels.join(' → ')} → 🚕 到终点`,
@@ -1530,7 +1534,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     category: 'hybrid',
     type: 'hybrid',
     cost: Math.round(totalCost * 100) / 100,
-    time: totalTime,
+    time: totalTime + (taxiEst.waitMinutes || 0),
     distance: (plan.distance || 0) * station.ratio + taxiDistance,
     segments: [
       ...transitLegs.map(l => ({ ...l, type: 'transit' })),
@@ -1737,7 +1741,7 @@ function renderResults(routes) {
       if (longWait) bits.push(`预计等待 ${d.waitMinutes} 分钟`);
       return `<div class="taxi-availability-warning">
         <i data-lucide="alert-triangle"></i>
-        <span>该区域叫车较难（${bits.join('，')}），实际可能需选更贵车型。建议优先选择<strong>全程公交</strong>方案</span>
+        <span>该区域叫车较难（${bits.join('，')}），已自动选取更易叫到的车型。建议优先选择<strong>全程公交</strong>方案</span>
       </div>`;
     }
     return '';
@@ -3266,13 +3270,8 @@ function parseDidiEstimateResponse(data) {
   const skippedCarpool = allOptions.length - bookable.length;
   const pool = bookable.length ? bookable : allOptions;
 
-  // 按价格升序，取最便宜的可叫档
+  // 按价格升序排列
   pool.sort((a, b) => a.price - b.price);
-  const best = pool[0];
-
-  if (skippedCarpool > 0) {
-    console.info(`[滴滴估价] 跳过 ${skippedCarpool} 个不可叫档（拼车/禁用/非客运），选中「${best.carType}」¥${best.price}`);
-  }
 
   // 5. 区域叫车难度信号：应答率 + 预计等待时间
   //    expect_params.answer_rate           — 应答率（0-100），越低越难叫到车
@@ -3295,7 +3294,28 @@ function parseDidiEstimateResponse(data) {
     if (m) waitMinutes = Number(m[1]);
   }
 
-  return { ...best, allOptions: pool, skippedCarpool, answerRate, waitMinutes };
+  // 6. 叫车困难时，不选最便宜的（最难叫到），选「容易叫到且便宜」的平衡档
+  //    启发式：应答率越低/等待越久 → 跳过的便宜档越多
+  let difficultySkip = 0;
+  if (answerRate != null && answerRate < 40) difficultySkip = 2;
+  else if (answerRate != null && answerRate < TAXI_DIFFICULTY.lowAnswerRate) difficultySkip = 1;
+  else if (waitMinutes != null && waitMinutes >= 25) difficultySkip = 2;
+  else if (waitMinutes != null && waitMinutes >= TAXI_DIFFICULTY.longWaitMin) difficultySkip = 1;
+
+  // 最多跳过一半（至少保留一个选项，不跳到最贵档）
+  const maxSkip = Math.max(0, Math.floor(pool.length / 2) - 1);
+  difficultySkip = Math.min(difficultySkip, maxSkip);
+
+  const best = pool[difficultySkip];
+
+  if (skippedCarpool > 0 || difficultySkip > 0) {
+    const parts = [];
+    if (skippedCarpool > 0) parts.push(`跳过 ${skippedCarpool} 个不可叫档（拼车/禁用/非客运）`);
+    if (difficultySkip > 0) parts.push(`叫车困难（应答率${answerRate ?? '?'}%/等待${waitMinutes ?? '?'}分钟），跳过最便宜 ${difficultySkip} 档`);
+    console.info(`[滴滴估价] ${parts.join('；')}，选中「${best.carType}」¥${best.price}`);
+  }
+
+  return { ...best, allOptions: pool, skippedCarpool, answerRate, waitMinutes, difficultySkip };
 }
 
 // 调用服务端滴滴估价代理，返回 { cost, source, carType, allOptions, raw }
