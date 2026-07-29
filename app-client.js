@@ -1,8 +1,82 @@
 // 出行成本优化器 - App.js
 
-// 注册 Service Worker
+// ===========================================================================
+// Service Worker — 注册 + 版本更新检测
+// ===========================================================================
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js');
+  let swNewVersion = null;
+
+  navigator.serviceWorker.register('sw.js').then((registration) => {
+    console.info('[SW] 注册成功，scope:', registration.scope);
+
+    // 检测是否有新版本在等待
+    if (registration.waiting) {
+      swNewVersion = registration.waiting;
+      notifyUpdateAvailable();
+    }
+
+    // 发现新 SW 正在安装 → 跟踪其状态变化
+    registration.addEventListener('updatefound', () => {
+      const installing = registration.installing;
+      if (!installing) return;
+      console.info('[SW] 发现新版本，安装中…');
+      installing.addEventListener('statechange', () => {
+        if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+          console.info('[SW] 新版本已就绪，等待页面刷新后生效');
+          swNewVersion = installing;
+          notifyUpdateAvailable();
+        }
+      });
+    });
+  }).catch((err) => {
+    console.warn('[SW] 注册失败:', err);
+  });
+
+  // 监听 SW 发来的版本消息
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'SW_VERSION') {
+      console.info(`[SW] 当前缓存版本: v${event.data.version}`);
+    }
+  });
+
+  // SW 控制器变更（skipWaiting + claim 后触发）
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    console.info('[SW] 控制器已切换，新版本已接管');
+  });
+
+  // 弹出更新提示
+  function notifyUpdateAvailable() {
+    // 避免重复弹窗
+    if (document.getElementById('sw-update-toast')) return;
+    const toast = document.createElement('div');
+    toast.id = 'sw-update-toast';
+    toast.innerHTML = `
+      <span>🔄 有新版本可用</span>
+      <button id="sw-update-btn">立即更新</button>
+    `;
+    Object.assign(toast.style, {
+      position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
+      background: 'var(--card-bg, #1e1e2e)', color: 'var(--text, #cdd6f4)',
+      padding: '12px 20px', borderRadius: '12px', boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+      zIndex: '9999', display: 'flex', alignItems: 'center', gap: '16px',
+      fontSize: '14px', border: '1px solid var(--border, #313244)',
+    });
+    const btn = toast.querySelector('#sw-update-btn');
+    Object.assign(btn.style, {
+      background: 'var(--accent, #89b4fa)', color: '#1e1e2e',
+      border: 'none', borderRadius: '8px', padding: '6px 16px',
+      cursor: 'pointer', fontWeight: '600', fontSize: '13px',
+    });
+    btn.addEventListener('click', () => {
+      // 通知等待中的 SW 跳过等待并刷新
+      if (swNewVersion) {
+        swNewVersion.postMessage({ type: 'SKIP_WAITING' });
+      }
+      // 兜底：直接刷新页面
+      window.location.reload();
+    });
+    document.body.appendChild(toast);
+  }
 }
 
 // 初始化 Lucide 图标
@@ -722,13 +796,13 @@ async function searchRoutes() {
     const didiAvailable = taxiRouteOk || hybridHasDidi;  // 至少有一条路线能拿到滴滴报价
 
     // 区域叫车难度：取所有 didi 路由里最差值（最低应答率 / 最长等待）
-    let answerRate = null, waitMinutes = null;
+    let answerRate = null, didiDurationMinutes = null;
     for (const r of [...taxiRoutes, ...hybridRoutes]) {
       if (r.dataSource !== 'didi') continue;
       answerRate = minOrNull(answerRate, r.answerRate);
-      waitMinutes = maxOrNull(waitMinutes, r.waitMinutes);
+      didiDurationMinutes = maxOrNull(didiDurationMinutes, r.didiDurationMinutes);
     }
-    window._taxiDifficulty = { available: didiAvailable, answerRate, waitMinutes };
+    window._taxiDifficulty = { available: didiAvailable, answerRate, didiDurationMinutes };
     window._taxiAvailable = didiAvailable;  // 兼容既有引用
 
     sortRoutes(allRoutes, sortMode);
@@ -833,13 +907,13 @@ function searchFullTaxi() {
               category: 'taxi',
               type: 'taxi',
               cost: Math.round(taxiEst.cost * 100) / 100,
-              time: Math.round(time / 60) + (taxiEst.waitMinutes || 0),
+              time: Math.round(time / 60),
               distance,
-              segments: [{ type: 'taxi', distance, time }],
+              segments: [{ type: 'taxi', distance, time, lineName: `全程打车${carTypeLabel}` }],
               description: `🚕 全程打车 ${distanceKm} km${carTypeLabel}`,
               dataSource,
               answerRate: taxiEst.answerRate,
-              waitMinutes: taxiEst.waitMinutes,
+              didiDurationMinutes: taxiEst.didiDurationMinutes,
               raw: route,
             }]);
           });
@@ -964,12 +1038,13 @@ async function createEndpointVariants({
     } else {
     const drivingTime = Math.round(taxiDistance / Math.max(traffic.speedMps || 0, 5));
     const estimate = await estimateTaxi(taxiDistance, drivingTime, from, to, { fromName, toName });
+    const carTypeSuffix = estimate.carType ? ` · ${estimate.carType}` : '';
     // 每一段独立估价，Didi 或本地兜底都会为这一段单独计算起步价。
     variants.push({
-      type: 'taxi', icon: '🚕', label: '打车', distance: taxiDistance,
+      type: 'taxi', icon: '🚕', label: `打车${carTypeSuffix}`, distance: taxiDistance,
       time: drivingTime + 5 * 60, cost: estimate.cost, taxiCost: estimate.cost,
       taxiSegments: 1, dataSource: estimate.source,
-      answerRate: estimate.answerRate, waitMinutes: estimate.waitMinutes,
+      answerRate: estimate.answerRate, didiDurationMinutes: estimate.didiDurationMinutes,
       segment: { type: 'taxi', distance: taxiDistance, time: drivingTime + 5 * 60, fromStation: fromName, toStation: toName },
       mapLeg: { type: 'taxi', from, to },
     });
@@ -1056,14 +1131,13 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
           id: `multimodal-${planIndex}-${access.type}-${egress.type}`,
           category: 'hybrid', type: 'hybrid', direction: 'multimodal',
           cost: Math.round(totalCost * 100) / 100,
-          time: Math.max(1, Math.round((access.time + middleTime + egress.time) / 60)
-            + (access.waitMinutes || 0) + (egress.waitMinutes || 0)),
+          time: Math.max(1, Math.round((access.time + middleTime + egress.time) / 60)),
           distance: access.distance + middleDistance + egress.distance,
           segments: detailSegments,
           description: `${access.icon} ${access.label}到 ${entry.name} → ${transitLabels.join(' → ')} → ${egress.icon} ${egress.label}到终点`,
           dataSource,
           answerRate: minOrNull(access.answerRate, egress.answerRate),
-          waitMinutes: maxOrNull(access.waitMinutes, egress.waitMinutes),
+          didiDurationMinutes: maxOrNull(access.didiDurationMinutes, egress.didiDurationMinutes),
           raw: {
             segments: middleRaw,
             taxiCost,
@@ -1216,8 +1290,9 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
 
     // 拆出所有 remaining 段（transit + walk），每段单独显示
     const remainingSegs = c.segments.slice(c.firstTransitIdx);
+    const carTypeLabel = taxiEst.carType ? ` · ${taxiEst.carType}` : '';
     const detailSegments = [{
-      type: 'taxi', distance: taxiDistance, lineName: `打车到 ${c.onStation.name}`,
+      type: 'taxi', distance: taxiDistance, lineName: `打车${carTypeLabel}到 ${c.onStation.name}`,
       fromStation: startPOI.name, toStation: c.onStation.name
     }];
     const descParts = [];
@@ -1244,7 +1319,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     });
 
     const taxiKm = Math.round(taxiDistance / 100) / 10;
-    const desc = `🚕 打车 ${taxiKm} km 到 ${c.onStation.name} → ${descParts.join(' → ')}`;
+    const desc = `🚕 打车${carTypeLabel} ${taxiKm} km 到 ${c.onStation.name} → ${descParts.join(' → ')}`;
 
     return {
       id: `taxi-to-transit-${c.onStation.name}`,
@@ -1252,13 +1327,13 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       type: 'hybrid',
       direction: 'taxi-to-transit',
       cost: Math.round(totalCost * 100) / 100,
-      time: totalTime + (taxiEst.waitMinutes || 0),
+      time: totalTime,
       distance: taxiDistance + (c.plan.distance || 0),
       segments: detailSegments,
       description: desc,
       dataSource: taxiEst.source,
       answerRate: taxiEst.answerRate,
-      waitMinutes: taxiEst.waitMinutes,
+      didiDurationMinutes: taxiEst.didiDurationMinutes,
       raw: {
         stationName: c.onStation.name,
         segments: remainingSegs, // AMap 原始段，给地图绘制用
@@ -1352,13 +1427,16 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const totalCost = taxiCost + transitCost;
     if (!Number.isFinite(totalCost) || totalCost >= taxiCeiling) return null;
 
+    const car1 = firstEstimate.carType ? ` · ${firstEstimate.carType}` : '';
+    const car2 = secondEstimate.carType ? ` · ${secondEstimate.carType}` : '';
+
     const middleRawSegments = candidate.segments.slice(candidate.firstIndex, candidate.lastIndex + 1);
     const middleTimeSeconds = middleRawSegments.reduce((sum, seg) => sum + (seg.time || 0), 0);
     const detailSegments = [{
       type: 'taxi',
       distance: firstTaxiDistance,
       time: firstTaxiSeconds,
-      lineName: `打车到 ${candidate.entry.name}`,
+      lineName: `打车${car1}到 ${candidate.entry.name}`,
       fromStation: startPOI.name,
       toStation: candidate.entry.name,
     }];
@@ -1383,7 +1461,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       type: 'taxi',
       distance: secondTaxiDistance,
       time: secondTaxiSeconds,
-      lineName: `打车到 ${endPOI.name}`,
+      lineName: `打车${car2}到 ${endPOI.name}`,
       fromStation: candidate.exit.name,
       toStation: endPOI.name,
     });
@@ -1399,15 +1477,14 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       type: 'hybrid',
       direction: 'taxi-transit-taxi',
       cost: Math.round(totalCost * 100) / 100,
-      time: Math.max(1, Math.round((firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds) / 60)
-        + (firstEstimate.waitMinutes || 0) + (secondEstimate.waitMinutes || 0)),
+      time: Math.max(1, Math.round((firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds) / 60)),
       distance: firstTaxiDistance + middleRawSegments.reduce((sum, seg) => sum + (seg.distance || 0), 0) + secondTaxiDistance,
       segments: detailSegments,
-      description: `🚕 到 ${candidate.entry.name} → ${transitLabels.join(' → ')} → 🚕 到终点`,
+      description: `🚕${car1} 到 ${candidate.entry.name} → ${transitLabels.join(' → ')} → 🚕${car2} 到终点`,
       dataSource,
       // 两段打车取最差值：最低应答率、最长等待
       answerRate: minOrNull(firstEstimate.answerRate, secondEstimate.answerRate),
-      waitMinutes: maxOrNull(firstEstimate.waitMinutes, secondEstimate.waitMinutes),
+      didiDurationMinutes: maxOrNull(firstEstimate.didiDurationMinutes, secondEstimate.didiDurationMinutes),
       raw: {
         segments: middleRawSegments,
         taxiCost,
@@ -1558,22 +1635,23 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
   const stationDisplay = stationLineInfo.direction
     ? `${stationLineInfo.line} · ${stationLineInfo.direction}`
     : stationLineInfo.line;
+  const carTypeSuffix = taxiEst.carType ? ` · ${taxiEst.carType}` : '';
   return {
     id: `hybrid-${station.segmentIndex}-${station.name}`,
     category: 'hybrid',
     type: 'hybrid',
     cost: Math.round(totalCost * 100) / 100,
-    time: totalTime + (taxiEst.waitMinutes || 0),
+    time: totalTime,
     distance: (plan.distance || 0) * station.ratio + taxiDistance,
     segments: [
       ...transitLegs.map(l => ({ ...l, type: 'transit' })),
-      { type: 'taxi', distance: taxiDistance, lineName: `打车到 ${endPOI ? endPOI.name : '目的地'}`,
+      { type: 'taxi', distance: taxiDistance, lineName: `打车${carTypeSuffix}到 ${endPOI ? endPOI.name : '目的地'}`,
         fromStation: station.name, toStation: endPOI ? endPOI.name : '目的地' },
     ],
-    description: `${station.transitMode === 'SUBWAY' ? '🚇' : '🚌'} ${stationDisplay} 到 ${station.name} → 🚕 打车 ${taxiDistanceKm} km`,
+    description: `${station.transitMode === 'SUBWAY' ? '🚇' : '🚌'} ${stationDisplay} 到 ${station.name} → 🚕 打车${carTypeSuffix} ${taxiDistanceKm} km`,
     dataSource: taxiEst.source,
     answerRate: taxiEst.answerRate,
-    waitMinutes: taxiEst.waitMinutes,
+    didiDurationMinutes: taxiEst.didiDurationMinutes,
     raw: { station, taxiDistance, taxiCost, transitCost, trafficSpeedKmh: speedKmh },
   };
 }
@@ -1761,16 +1839,12 @@ function renderResults(routes) {
         <span>该区域实时叫车数据不可用，打车费用为估算值。建议优先选择<strong>全程公交</strong>方案</span>
       </div>`;
     }
-    // 有滴滴报价，但应答率低 / 等待久 → 叫车较难
+    // 有滴滴报价，但应答率低 → 叫车较难
     const lowRate = d.answerRate != null && d.answerRate < TAXI_DIFFICULTY.lowAnswerRate;
-    const longWait = d.waitMinutes != null && d.waitMinutes >= TAXI_DIFFICULTY.longWaitMin;
-    if (lowRate || longWait) {
-      const bits = [];
-      if (lowRate) bits.push(`应答率 ${d.answerRate}%`);
-      if (longWait) bits.push(`预计等待 ${d.waitMinutes} 分钟`);
+    if (lowRate) {
       return `<div class="taxi-availability-warning">
         <i data-lucide="alert-triangle"></i>
-        <span>该区域叫车较难（${bits.join('，')}），已自动选取更易叫到的车型。建议优先选择<strong>全程公交</strong>方案</span>
+        <span>该区域叫车较难（应答率 ${d.answerRate}%），已自动选取更易叫到的车型。建议优先选择<strong>全程公交</strong>方案</span>
       </div>`;
     }
     return '';
@@ -3152,7 +3226,7 @@ const _didiEstimateInFlight = new Map();
 const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
 
 // 叫车难度阈值（启发式）：应答率低于此或预计等待不短于此 → 判定该区域叫车较难
-const TAXI_DIFFICULTY = { lowAnswerRate: 60, longWaitMin: 15 };
+const TAXI_DIFFICULTY = { lowAnswerRate: 60 };
 
 // 打车最小距离阈值：低于此距离步行更划算（全程打车 1000m，接驳打车 800m）
 const TAXI_MIN_FULL_M = 1000;
@@ -3306,9 +3380,10 @@ function parseDidiEstimateResponse(data) {
   // 按价格升序排列
   pool.sort((a, b) => a.price - b.price);
 
-  // 5. 区域叫车难度信号：应答率 + 预计等待时间
+  // 5. 区域叫车难度信号 + 滴滴行程用时
   //    expect_params.answer_rate           — 应答率（0-100），越低越难叫到车
-  //    tab_extra_data.classify.duration    — 预计等待秒数（time_text 是其文本「18分钟」）
+  //    tab_extra_data.classify.duration    — 滴滴估算行程用时秒数（上车→下车，非等车时间）
+  //    tab_extra_data.classify.time_text   — 兜底文本「18分钟」
   //    order_button_info.expect_info_text  — 兜底文本「应答率{38}%」
   let answerRate = null;
   const expectParams = respData.expect_params || {};
@@ -3318,22 +3393,21 @@ function parseDidiEstimateResponse(data) {
     const m = String(respData.order_button_info?.expect_info_text || '').match(/应答率\{(\d+)\}/);
     if (m) answerRate = Number(m[1]);
   }
-  let waitMinutes = null;
+  // 滴滴自己的行程用时估算（与高德驾车时间互为参考，非等车接驾时间）
+  let didiDurationMinutes = null;
   const classify = respData.tab_extra_data?.classify;
   if (classify && Number.isFinite(classify.duration)) {
-    waitMinutes = Math.round(Number(classify.duration) / 60);
+    didiDurationMinutes = Math.round(Number(classify.duration) / 60);
   } else if (classify && classify.time_text) {
     const m = String(classify.time_text).match(/(\d+)\s*分钟/);
-    if (m) waitMinutes = Number(m[1]);
+    if (m) didiDurationMinutes = Number(m[1]);
   }
 
   // 6. 叫车困难时，不选最便宜的（最难叫到），选「容易叫到且便宜」的平衡档
-  //    启发式：应答率越低/等待越久 → 跳过的便宜档越多
+  //    启发式：应答率越低 → 跳过的便宜档越多
   let difficultySkip = 0;
   if (answerRate != null && answerRate < 40) difficultySkip = 2;
   else if (answerRate != null && answerRate < TAXI_DIFFICULTY.lowAnswerRate) difficultySkip = 1;
-  else if (waitMinutes != null && waitMinutes >= 25) difficultySkip = 2;
-  else if (waitMinutes != null && waitMinutes >= TAXI_DIFFICULTY.longWaitMin) difficultySkip = 1;
 
   // 最多跳过一半（至少保留一个选项，不跳到最贵档）
   const maxSkip = Math.max(0, Math.floor(pool.length / 2) - 1);
@@ -3344,11 +3418,11 @@ function parseDidiEstimateResponse(data) {
   if (skippedCarpool > 0 || difficultySkip > 0) {
     const parts = [];
     if (skippedCarpool > 0) parts.push(`跳过 ${skippedCarpool} 个不可叫档（拼车/禁用/非客运）`);
-    if (difficultySkip > 0) parts.push(`叫车困难（应答率${answerRate ?? '?'}%/等待${waitMinutes ?? '?'}分钟），跳过最便宜 ${difficultySkip} 档`);
+    if (difficultySkip > 0) parts.push(`叫车困难（应答率${answerRate ?? '?'}%），跳过最便宜 ${difficultySkip} 档`);
     console.info(`[滴滴估价] ${parts.join('；')}，选中「${best.carType}」¥${best.price}`);
   }
 
-  return { ...best, allOptions: pool, skippedCarpool, answerRate, waitMinutes, difficultySkip };
+  return { ...best, allOptions: pool, skippedCarpool, answerRate, didiDurationMinutes, difficultySkip };
 }
 
 // 调用服务端滴滴估价代理，返回 { cost, source, carType, allOptions, raw }
@@ -3462,7 +3536,7 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
         carType: parsed.carType,
         allOptions: parsed.allOptions,
         answerRate: parsed.answerRate,
-        waitMinutes: parsed.waitMinutes,
+        didiDurationMinutes: parsed.didiDurationMinutes,
         raw: null,
       };
       _didiEstimateCache.set(cacheKey, { value, expiresAt: Date.now() + DIDI_ESTIMATE_CACHE_TTL_MS });
