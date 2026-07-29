@@ -9,17 +9,8 @@ const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
+  '/app-client.js',
   '/manifest.json',
-  '/app-client-entry.js',
-  '/01-state.js',
-  '/02-utils.js',
-  '/03-algorithm.js',
-  '/04-map.js',
-  '/05-didi.js',
-  '/06-route.js',
-  '/07-ui.js',
-  '/08-settings.js',
-  '/09-sw.js',
 ];
 
 // ===========================================================================
