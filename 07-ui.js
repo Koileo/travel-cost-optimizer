@@ -1,5 +1,19 @@
 // 07-ui.js — 界面渲染
 // 出行成本优化器
+const BADGE_META = {
+  best: { label: '当前最优', icon: 'award' },
+  fast: { label: '最快', icon: 'zap' },
+  recommended: { label: '推荐', icon: 'thumbs-up' },
+};
+
+const CATEGORY_META = {
+  transit: { label: '全程公交', icon: 'bus' },
+  taxi: { label: '全程打车', icon: 'car-taxi-front' },
+  hybrid: { label: '混合', icon: 'shuffle' },
+  walk: { label: '全程步行', icon: 'footprints' },
+  ride: { label: '全程骑行', icon: 'bike' },
+};
+
 function refreshIcons() {
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
     window.lucide.createIcons();
