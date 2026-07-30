@@ -734,7 +734,7 @@ document.addEventListener('click', (e) => {
     sortRoutes(allRoutes, sortMode);
     allRoutes.forEach(route => { route.badge = null; });
     if (allRoutes[0]) allRoutes[0].badge = 'best';
-    renderResults(allRoutes.slice(0, 14));
+    renderResults(selectRoutesForDisplay(allRoutes));
     saveSearchState();
   }
 });

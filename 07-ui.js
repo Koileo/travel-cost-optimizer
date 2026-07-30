@@ -173,7 +173,7 @@ function restoreSearchState() {
       b.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     if (map) updateMapMarkers();
-    renderResults(allRoutes.slice(0, 14));
+    renderResults(selectRoutesForDisplay(allRoutes));
     return true;
   } catch (e) {
     return false;
@@ -786,7 +786,7 @@ passengerMinus.addEventListener('click', () => {
       sortRoutes(allRoutes, sortMode);
       allRoutes.forEach(route => { route.badge = null; });
       if (allRoutes[0]) allRoutes[0].badge = 'best';
-      renderResults(allRoutes.slice(0, 14));
+      renderResults(selectRoutesForDisplay(allRoutes));
       saveSearchState();
     }
   }
@@ -800,7 +800,7 @@ passengerPlus.addEventListener('click', () => {
       sortRoutes(allRoutes, sortMode);
       allRoutes.forEach(route => { route.badge = null; });
       if (allRoutes[0]) allRoutes[0].badge = 'best';
-      renderResults(allRoutes.slice(0, 14));
+      renderResults(selectRoutesForDisplay(allRoutes));
       saveSearchState();
     }
   }

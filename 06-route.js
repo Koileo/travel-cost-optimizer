@@ -80,7 +80,7 @@ async function searchRoutes() {
       allRoutes[0].badge = 'best';
     }
 
-    renderResults(allRoutes.slice(0, 14));
+    renderResults(selectRoutesForDisplay(allRoutes));
     saveSearchState();
   } catch (error) {
     console.error('查询失败:', error);
@@ -429,7 +429,7 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
   const origin = [startPOI.location.lng, startPOI.location.lat];
   const destination = [endPOI.location.lng, endPOI.location.lat];
 
-  const planRoutes = await Promise.all(result.plans.slice(0, 4).map(async (plan, planIndex) => {
+  const planRoutes = await Promise.all(result.plans.slice(0, 6).map(async (plan, planIndex) => {
     const segments = plan.segments || [];
     const transitIndexes = segments
       .map((seg, index) => ({ seg, index }))
@@ -451,7 +451,7 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
     const trailingTime = trailing.reduce((sum, seg) => sum + (seg.time || 0), 0);
     const middleTime = middleRaw.reduce((sum, seg) => sum + (seg.time || 0), 0);
     const middleDistance = middleRaw.reduce((sum, seg) => sum + (seg.distance || 0), 0);
-    if (middleDistance < 1000) return [];
+    if (middleDistance < 600) return [];
 
     // 从 TransitDetails 获取结构化的出入口名称
     const entranceGate = segments[firstIndex].transit?.entrance?.name || '';
@@ -539,7 +539,7 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   // 遍历前 2 个公交方案，收集所有真实的公交/地铁下车站
   const candidates = [];
   const seen = new Set();
-  result.plans.slice(0, 4).forEach(plan => {
+  result.plans.slice(0, 6).forEach(plan => {
     collectTransferStations(plan).forEach(s => {
       const key = s.name + '|' + Math.round(s.ratio * 100);
       if (!seen.has(key)) {
@@ -571,9 +571,9 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
     candidates.map(c => buildHybridFromStation(c.plan, c.station, endLngLat, traffic))
   ))
     .filter(Boolean)
-    .filter(h => isFinite(h.cost) && h.cost < fullTaxiCost)
+    .filter(h => isFinite(h.cost) && h.cost <= getHybridCostCeiling(fullTaxiCost))
     .sort((a, b) => a.cost - b.cost)
-    .slice(0, 5);
+    .slice(0, 8);
 
   console.log(`[hybrid] candidates=${candidates.length}, taxiThreshold=${fullTaxiCost.toFixed(2)}, kept=${hybrids.length}`);
 
@@ -602,7 +602,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
   const seen = new Set();
 
   // 遍历前 2 个公交方案，取其首个公交段的 on_station
-  result.plans.slice(0, 4).forEach(plan => {
+  result.plans.slice(0, 6).forEach(plan => {
     const segments = plan.segments || [];
     const firstTransitIdx = segments.findIndex(s =>
       s.transit_mode === 'SUBWAY' || s.transit_mode === 'BUS'
@@ -626,7 +626,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       .reduce((sum, s) => sum + (s.distance || 0), 0);
 
     // 步行太短就没必要打车去站
-    if (walkDistance < 800) return;
+    if (walkDistance < 500) return;
 
     candidates.push({ plan, segments, firstSeg, onStation, firstTransitIdx, walkDistance });
   });
@@ -640,7 +640,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
     // 综合步行时间+天气判断打车是否值得
-    if (!isTaxiWorthIt(taxiDistance).worthIt) {
+    if (!isTaxiWorthIt(taxiDistance).worthIt && c.walkDistance < 600) {
       console.info(`[打车+公交] 跳过`);
       return null;
     }
@@ -661,7 +661,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     const totalCost = taxiCost + transitCost;
 
     // 必须比全程打车便宜才有意义
-    if (!isFinite(totalCost) || totalCost >= fullTaxiCost) return null;
+    if (!isFinite(totalCost) || totalCost > getHybridCostCeiling(fullTaxiCost)) return null;
 
     // 拆出所有 remaining 段（transit + walk），每段单独显示
     const remainingSegs = c.segments.slice(c.firstTransitIdx);
@@ -723,7 +723,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
   return builtHybrids
     .filter(Boolean)
     .sort((a, b) => a.cost - b.cost)
-    .slice(0, 4);
+    .slice(0, 6);
 }
 
 
@@ -739,7 +739,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     ? fullTaxiCost
     : estimateTaxiByLocalRules(fullDistance, 0);
 
-  const candidates = result.plans.slice(0, 6).map((plan, planIndex) => {
+  const candidates = result.plans.slice(0, 8).map((plan, planIndex) => {
     const segments = plan.segments || [];
     const transitIndexes = segments
       .map((seg, index) => ({ seg, index }))
@@ -759,16 +759,18 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const middleDistance = segments
       .slice(firstIndex, lastIndex + 1)
       .reduce((sum, seg) => sum + (seg.distance || 0), 0);
-    if (initialWalk < 500 || finalWalk < 500 || middleDistance < 3000) return null;
+    if (initialWalk < 350 || finalWalk < 350 || middleDistance < 2000) return null;
 
     return {
       plan, planIndex, segments, firstIndex, lastIndex, entry, exit,
+      initialWalk,
+      finalWalk,
       accessWalk: initialWalk + finalWalk,
     };
   })
     .filter(Boolean)
     .sort((a, b) => b.accessWalk - a.accessWalk)
-    .slice(0, 3);
+    .slice(0, 5);
 
   const routes = await Promise.all(candidates.map(async candidate => {
     const entryPoint = [candidate.entry.location.lng, candidate.entry.location.lat];
@@ -783,7 +785,9 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     if (firstTaxiDistance <= 0 || secondTaxiDistance <= 0) return null;
 
     // 综合步行时间+天气判断任一端打车是否值得
-    if (!isTaxiWorthIt(firstTaxiDistance).worthIt || !isTaxiWorthIt(secondTaxiDistance).worthIt) {
+    const firstLegWorthIt = isTaxiWorthIt(firstTaxiDistance).worthIt || candidate.initialWalk >= 600;
+    const secondLegWorthIt = isTaxiWorthIt(secondTaxiDistance).worthIt || candidate.finalWalk >= 600;
+    if (!firstLegWorthIt || !secondLegWorthIt) {
       console.info(`[打车+公交+打车] 有一段不划算，跳过`);
       return null;
     }
@@ -804,7 +808,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const taxiCost = firstEstimate.cost + secondEstimate.cost;
     const transitCost = candidate.plan.cost || 2;
     const totalCost = taxiCost + transitCost;
-    if (!Number.isFinite(totalCost) || totalCost >= taxiCeiling) return null;
+    if (!Number.isFinite(totalCost) || totalCost > getHybridCostCeiling(taxiCeiling)) return null;
 
     const car1 = firstEstimate.carType ? ` · ${firstEstimate.carType}` : '';
     const car2 = secondEstimate.carType ? ` · ${secondEstimate.carType}` : '';
@@ -880,7 +884,12 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     };
   }));
 
-  return routes.filter(Boolean).sort((a, b) => getDisplayCost(a) - getDisplayCost(b)).slice(0, 4);
+  return routes.filter(Boolean).sort((a, b) => getDisplayCost(a) - getDisplayCost(b)).slice(0, 6);
+}
+
+// 混合方案不必严格低于全程打车：略贵一些但显著减少步行时仍有参考价值。
+function getHybridCostCeiling(fullTaxiCost) {
+  return fullTaxiCost + Math.max(6, fullTaxiCost * 0.15);
 }
 
 // 检测打车路线中的拥堵路段

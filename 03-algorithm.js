@@ -144,6 +144,33 @@ function sortRoutes(routes, mode = 'balanced') {
   routes.push(...indexed.map(x => x.r));
 }
 
+// 在保持当前排序结果的前提下，给混合方案保留展示席位。
+// 否则它们即使已生成，也容易被步行、骑行和相近的纯公交方案挤出前 14 条。
+function selectRoutesForDisplay(routes, limit = 14) {
+  const selected = routes.slice(0, limit);
+  const hybridRoutes = routes.filter(route => route.category === 'hybrid');
+  const targetHybridCount = Math.min(6, hybridRoutes.length, Math.max(0, limit - 1));
+  let currentHybridCount = selected.filter(route => route.category === 'hybrid').length;
+  if (currentHybridCount >= targetHybridCount) return selected;
+
+  const selectedIds = new Set(selected.map(route => route.id));
+  for (const hybrid of hybridRoutes) {
+    if (currentHybridCount >= targetHybridCount) break;
+    if (selectedIds.has(hybrid.id)) continue;
+
+    // 保留第一名，优先替换排名靠后的非混合方案。
+    const replaceIndex = selected.map((route, index) => ({ route, index }))
+      .reverse()
+      .find(({ route, index }) => index > 0 && route.category !== 'hybrid')?.index;
+    if (replaceIndex == null) break;
+    selectedIds.delete(selected[replaceIndex].id);
+    selected[replaceIndex] = hybrid;
+    selectedIds.add(hybrid.id);
+    currentHybridCount++;
+  }
+  return selected;
+}
+
 
 function calculateWalkingDistance(points) {
   let totalDistance = 0;
