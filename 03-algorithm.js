@@ -77,6 +77,52 @@ function renderComfortStars(route) {
   }</span>`;
 }
 
+const PRACTICAL_DIRECT_ROUTE_LIMITS = {
+  walk: { maxDistance: 8_000, maxMinutes: 120 },
+  ride: { maxDistance: 25_000, maxMinutes: 150 },
+};
+
+// “免费”不等于“可推荐”。先用绝对可行性约束剔除人类显然不会选择的全程步行/骑行。
+function isPracticalRoute(route) {
+  if (!route) return false;
+  const category = route.category || route.type;
+  const distance = Number(route.distance);
+  const minutes = Number(route.time);
+  if (!Number.isFinite(distance) || !Number.isFinite(minutes) || distance < 0 || minutes <= 0) return false;
+
+  const weatherPenalty = getWeatherPenalty(_currentWeather);
+  const isWithinLimit = (mode, modeDistance, modeMinutes) => {
+    const limits = PRACTICAL_DIRECT_ROUTE_LIMITS[mode];
+    const weatherBonus = mode === 'ride' ? weatherPenalty.rideBonus : weatherPenalty.walkBonus;
+    // 炎热、严寒或降雨时进一步收紧暴露在室外的合理上限，但最多收紧 45%。
+    const weatherFactor = Math.max(0.55, 1 - Math.min(Math.max(weatherBonus, 0), 3) * 0.15);
+    return modeDistance <= limits.maxDistance * weatherFactor &&
+      modeMinutes <= limits.maxMinutes * weatherFactor;
+  };
+
+  if (PRACTICAL_DIRECT_ROUTE_LIMITS[category] && !isWithinLimit(category, distance, minutes)) {
+    return false;
+  }
+
+  // 混合/公交方案也不能通过拆段藏入超长步行或骑行。
+  const segments = Array.isArray(route.segments) ? route.segments : [];
+  for (const mode of ['walk', 'ride']) {
+    const outdoorSegments = segments.filter(segment => getSegmentMode(segment) === mode);
+    if (!outdoorSegments.length) continue;
+    const modeDistance = outdoorSegments.reduce((sum, segment) => sum + (Number(segment.distance) || 0), 0);
+    const modeMinutes = outdoorSegments.reduce(
+      (sum, segment) => sum + getSegmentMinutes(segment, 0),
+      0
+    );
+    if (!isWithinLimit(mode, modeDistance, modeMinutes)) return false;
+  }
+  return true;
+}
+
+function filterPracticalRoutes(routes) {
+  return (Array.isArray(routes) ? routes : []).filter(isPracticalRoute);
+}
+
 function assignParetoRanks(routes) {
   const metrics = routes.map(route => ({
     cost: toRouteMetric(getDisplayCost(route)),

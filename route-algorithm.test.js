@@ -16,10 +16,15 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(
-  `${source}\nglobalThis.routeAlgorithm = { sortRoutes, selectRoutesForDisplay };`,
+  `${source}\nglobalThis.routeAlgorithm = { sortRoutes, selectRoutesForDisplay, isPracticalRoute, filterPracticalRoutes };`,
   context
 );
-const { sortRoutes, selectRoutesForDisplay } = context.routeAlgorithm;
+const {
+  sortRoutes,
+  selectRoutesForDisplay,
+  isPracticalRoute,
+  filterPracticalRoutes,
+} = context.routeAlgorithm;
 
 function route(id, cost, time, comfort, extra = {}) {
   return {
@@ -97,5 +102,41 @@ test('展示补位只选择有竞争力的混合方案并保持全局顺序', ()
   assert.deepEqual(
     displayed.map(item => routes.indexOf(item)),
     displayed.map(item => routes.indexOf(item)).slice().sort((a, b) => a - b)
+  );
+});
+
+test('超长全程步行和骑行在排序前直接淘汰', () => {
+  const absurdWalk = route('airport-walk', 0, 11 * 60 + 24, 600, {
+    category: 'walk',
+    type: 'walk',
+    distance: 51_300,
+  });
+  const practicalWalk = route('nearby-walk', 0, 60, 60, {
+    category: 'walk',
+    type: 'walk',
+    distance: 5_000,
+  });
+  const absurdRide = route('airport-ride', 6, 210, 120, {
+    category: 'ride',
+    type: 'ride',
+    distance: 51_300,
+  });
+  const disguisedHybrid = route('disguised-walk', 8, 240, 120, {
+    category: 'hybrid',
+    type: 'hybrid',
+    distance: 30_000,
+    segments: [
+      { type: 'walk', distance: 12_000, time: 150 * 60 },
+      { type: 'transit', distance: 18_000, time: 90 * 60 },
+    ],
+  });
+
+  assert.equal(isPracticalRoute(absurdWalk), false);
+  assert.equal(isPracticalRoute(practicalWalk), true);
+  assert.equal(isPracticalRoute(absurdRide), false);
+  assert.equal(isPracticalRoute(disguisedHybrid), false);
+  assert.deepEqual(
+    filterPracticalRoutes([absurdWalk, practicalWalk, absurdRide, disguisedHybrid]).map(item => item.id),
+    ['nearby-walk']
   );
 });

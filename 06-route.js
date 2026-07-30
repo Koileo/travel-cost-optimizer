@@ -73,8 +73,13 @@ async function searchRoutes() {
       taxiTransitTaxi: taxiTransitTaxiRoutes.length,
       hybridAfterDedupe: hybridRoutes.length,
     });
-    allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
-      .filter(route => countTaxiSegments(route) <= 2);
+    allRoutes = filterPracticalRoutes([
+      ...transitRoutes,
+      ...walkingRoutes,
+      ...ridingRoutes,
+      ...taxiRoutes,
+      ...hybridRoutes,
+    ]).filter(route => countTaxiSegments(route) <= 2);
 
     // 检测叫车可用性 + 区域难度：Didi 失败时标记所有含打车段的路由
     const taxiRouteOk = taxiRoutes[0] && taxiRoutes[0].dataSource === 'didi';

@@ -162,7 +162,9 @@ function restoreSearchState() {
       endInput.value = endPOI.name || '';
       endInput.closest('.input-wrapper')?.classList.add('selected');
     }
-    allRoutes = saved.allRoutes;
+    // 旧缓存也必须经过当前版本的可行性校验，避免恢复曾经保存的超长步行/骑行路线。
+    allRoutes = filterPracticalRoutes(saved.allRoutes);
+    if (allRoutes.length === 0) return false;
     sortMode = saved.sortMode || 'balanced';
     passengerCount = saved.passengerCount || 1;
     // 缓存可能来自旧版评分模型，恢复时按当前规则重新计算，避免沿用过期顺序。
