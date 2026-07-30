@@ -19,6 +19,101 @@ const DIDI_CITY_ID_MAP = {
 const _didiEstimateCache = new Map();
 const _didiEstimateInFlight = new Map();
 const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
+const DIDI_MAX_CONCURRENT_REQUESTS = 1;
+const DIDI_MIN_REQUEST_INTERVAL_MS = globalThis.__DIDI_TEST_MIN_INTERVAL_MS ?? 700;
+const DIDI_SEARCH_REQUEST_BUDGET = globalThis.__DIDI_TEST_REQUEST_BUDGET ?? 8;
+const DIDI_CIRCUIT_BREAK_MS = 60 * 1000;
+const _didiRequestQueue = [];
+let _didiActiveRequests = 0;
+let _didiLastRequestAt = 0;
+let _didiSearchBudgetRemaining = DIDI_SEARCH_REQUEST_BUDGET;
+let _didiFailureStreak = 0;
+let _didiCircuitOpenUntil = 0;
+let _didiCircuitNoticeShown = false;
+
+function createDidiClientError(message, code, status = null) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+function beginDidiSearchBatch() {
+  _didiSearchBudgetRemaining = DIDI_SEARCH_REQUEST_BUDGET;
+  _didiCircuitNoticeShown = false;
+}
+
+function resetDidiRequestState() {
+  _didiFailureStreak = 0;
+  _didiCircuitOpenUntil = 0;
+  _didiCircuitNoticeShown = false;
+  beginDidiSearchBatch();
+}
+
+function reserveDidiRequestBudget() {
+  if (_didiSearchBudgetRemaining <= 0) {
+    throw createDidiClientError('本轮实时估价额度已用完', 'DIDI_BUDGET_EXHAUSTED');
+  }
+  _didiSearchBudgetRemaining--;
+}
+
+function openDidiCircuit(status) {
+  _didiCircuitOpenUntil = Math.max(_didiCircuitOpenUntil, Date.now() + DIDI_CIRCUIT_BREAK_MS);
+  return createDidiClientError(
+    `滴滴估价暂时熔断（HTTP ${status}），本轮剩余路线改用本地估价`,
+    'DIDI_CIRCUIT_OPEN',
+    status
+  );
+}
+
+function recordDidiResponseStatus(status) {
+  if (status >= 200 && status < 300) {
+    _didiFailureStreak = 0;
+    return;
+  }
+  if (status === 429 || status === 520) throw openDidiCircuit(status);
+  if ([502, 503, 504].includes(status)) _didiFailureStreak++;
+  if (_didiFailureStreak >= 2) throw openDidiCircuit(status);
+}
+
+function drainDidiRequestQueue() {
+  if (_didiActiveRequests >= DIDI_MAX_CONCURRENT_REQUESTS || !_didiRequestQueue.length) return;
+  const job = _didiRequestQueue.shift();
+
+  if (Date.now() < _didiCircuitOpenUntil) {
+    job.reject(createDidiClientError('滴滴估价熔断中', 'DIDI_CIRCUIT_OPEN'));
+    queueMicrotask(drainDidiRequestQueue);
+    return;
+  }
+
+  // 在定时等待阶段也占住并发槽，避免多个 drain 同时安排请求。
+  _didiActiveRequests++;
+  const waitMs = Math.max(0, DIDI_MIN_REQUEST_INTERVAL_MS - (Date.now() - _didiLastRequestAt));
+  setTimeout(async () => {
+    if (Date.now() < _didiCircuitOpenUntil) {
+      job.reject(createDidiClientError('滴滴估价熔断中', 'DIDI_CIRCUIT_OPEN'));
+      _didiActiveRequests--;
+      drainDidiRequestQueue();
+      return;
+    }
+    _didiLastRequestAt = Date.now();
+    try {
+      job.resolve(await job.request());
+    } catch (error) {
+      job.reject(error);
+    } finally {
+      _didiActiveRequests--;
+      drainDidiRequestQueue();
+    }
+  }, waitMs);
+}
+
+function scheduleDidiRequest(request) {
+  return new Promise((resolve, reject) => {
+    _didiRequestQueue.push({ request, resolve, reject });
+    drainDidiRequestQueue();
+  });
+}
 
 // 叫车难度阈值（启发式）：应答率低于此或预计等待不短于此 → 判定该区域叫车较难
 const TAXI_DIFFICULTY = { lowAnswerRate: 60 };
@@ -249,6 +344,11 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
     return _didiEstimateInFlight.get(cacheKey);
   }
 
+  if (Date.now() < _didiCircuitOpenUntil) {
+    throw createDidiClientError('滴滴估价熔断中', 'DIDI_CIRCUIT_OPEN');
+  }
+  reserveDidiRequestBudget();
+
   const request = (async () => {
     console.info('[滴滴估价请求]', { from, to });
 
@@ -263,30 +363,31 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
         await new Promise(r => setTimeout(r, delay));
       }
 
-      const response = await fetch('/didi-estimate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from_lat: from[1],
-          from_lng: from[0],
-          from_name: tripMeta.fromName || startPOI?.name || '',
-          from_address: tripMeta.fromAddress || startPOI?.address || '',
-          to_lat: to[1],
-          to_lng: to[0],
-          to_name: tripMeta.toName || endPOI?.name || '',
-          to_address: tripMeta.toAddress || endPOI?.address || '',
-          city_id: cityId,
-          didi_config: {
-            endpoint: appSettings.didiEndpoint,
-            headers: appSettings.didiHeaders,
-            body: appSettings.didiBody,
-          },
-        }),
-      });
+      const response = await scheduleDidiRequest(() => fetch('/didi-estimate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from_lat: from[1],
+            from_lng: from[0],
+            from_name: tripMeta.fromName || startPOI?.name || '',
+            from_address: tripMeta.fromAddress || startPOI?.address || '',
+            to_lat: to[1],
+            to_lng: to[0],
+            to_name: tripMeta.toName || endPOI?.name || '',
+            to_address: tripMeta.toAddress || endPOI?.address || '',
+            city_id: cityId,
+            didi_config: {
+              endpoint: appSettings.didiEndpoint,
+              headers: appSettings.didiHeaders,
+              body: appSettings.didiBody,
+            },
+          }),
+        }));
+      recordDidiResponseStatus(response.status);
 
-      // 502/504 可重试，其他错误直接抛出
+      // 普通网关错误可退避重试；520 / 429 会立即触发熔断。
       if (!response.ok) {
-        const retryable = response.status === 502 || response.status === 504;
+        const retryable = [429, 502, 503, 504, 520].includes(response.status);
         lastError = new Error(
           retryable
             ? `滴滴估价服务暂不可用（HTTP ${response.status}），正在重试…`
@@ -365,7 +466,14 @@ async function estimateTaxi(distanceMeters, timeSeconds, fromLocation, toLocatio
       time: didiResult.time || timeSeconds,
     };
   } catch (err) {
-    console.warn('[taxi] 滴滴估价失败，回退本地规则:', err.message);
+    if (err.code === 'DIDI_CIRCUIT_OPEN') {
+      if (!_didiCircuitNoticeShown) {
+        console.warn('[taxi] 滴滴估价已熔断，本轮剩余候选改用本地规则');
+        _didiCircuitNoticeShown = true;
+      }
+    } else if (err.code !== 'DIDI_BUDGET_EXHAUSTED') {
+      console.warn('[taxi] 滴滴估价失败，回退本地规则:', err.message);
+    }
   }
 
   // 回退：本地计价规则

@@ -120,7 +120,7 @@ if (typeof cfgSaveBtn !== 'undefined' && cfgSaveBtn) {
     try { appSettings = { ...appSettings, ...readDidiSettingsForm() }; }
     catch (err) { didiTestResult.className = 'settings-test-result show is-error'; didiTestResult.textContent = err.message; return; }
     saveSettings(appSettings);
-    _didiEstimateCache.clear(); _didiEstimateInFlight.clear();
+    _didiEstimateCache.clear(); _didiEstimateInFlight.clear(); resetDidiRequestState();
     const c = appSettings.city || '北京';
     if (_autoCompleteStart) _autoCompleteStart.setCity(c);
     if (_autoCompleteEnd) _autoCompleteEnd.setCity(c);
@@ -138,6 +138,7 @@ if (typeof cfgTestDidi !== 'undefined' && cfgTestDidi) {
     try {
       appSettings = { ...appSettings, ...readDidiSettingsForm() };
       cfgTestDidi.disabled = true;
+      resetDidiRequestState();
       didiTestResult.className = 'settings-test-result show';
       didiTestResult.textContent = '正在测试北京站到三里屯的估价...';
       const r = await getDidiEstimate([116.4273, 39.9047], [116.4551, 39.9322], { fromName: '北京站', toName: '三里屯' });
@@ -177,7 +178,7 @@ if (typeof cfgImportConfirm !== 'undefined' && cfgImportConfirm) {
     if (d.didiHeaders) appSettings.didiHeaders = d.didiHeaders;
     if (d.didiBody) appSettings.didiBody = d.didiBody;
     saveSettings(appSettings);
-    _didiEstimateCache.clear(); _didiEstimateInFlight.clear();
+    _didiEstimateCache.clear(); _didiEstimateInFlight.clear(); resetDidiRequestState();
     fillSettingsForm();
     if (typeof cfgImportText !== 'undefined' && cfgImportText) cfgImportText.value = '';
     cfgImportArea.style.display = 'none';

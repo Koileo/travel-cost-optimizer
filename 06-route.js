@@ -19,6 +19,7 @@ async function searchRoutes() {
   `;
   refreshIcons();
   _drivingTimeCache.clear();
+  beginDidiSearchBatch();
 
   try {
     // 各基础路网只查询一次；混合方案复用公共交通主干。
