@@ -183,7 +183,12 @@ async function getDrivingTime(from, to, fallbackSpeedMps = 8.3) {
           const dist = route.distance || 0;
           const time = route.time || 0;
           if (dist > 0 && time > 0) {
-            resolve({ time, distance: dist, speedMps: dist / time });
+            const path = Array.isArray(route.path) && route.path.length >= 2
+              ? route.path
+              : (Array.isArray(route.steps)
+                ? route.steps.flatMap(step => Array.isArray(step.path) ? step.path : [])
+                : []);
+            resolve({ time, distance: dist, speedMps: dist / time, path });
             return;
           }
         }
@@ -600,7 +605,7 @@ async function createEndpointVariants({
       taxiSegments: 1, dataSource: estimate.source,
       answerRate: estimate.answerRate, didiDurationMinutes: estimate.didiDurationMinutes,
       segment: { type: 'taxi', distance: taxiDistance, time: withTaxiPickup(drivingTime), fromStation: fromName, toStation: toName },
-      mapLeg: { type: 'taxi', from, to },
+      mapLeg: { type: 'taxi', from, to, path: driving.path },
       actualSpeedMps: driving.speedMps,
     });
     }
@@ -879,6 +884,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       raw: {
         stationName: c.onStation.name,
         segments: remainingSegs, // AMap 原始段，给地图绘制用
+        taxiLegs: [{ from: origin, to: stationLngLat, path: driving.path, type: 'taxi' }],
         taxiDistance,
         taxiCost,
         transitCost,
@@ -1046,8 +1052,8 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
         entryStation: candidate.entry,
         exitStation: candidate.exit,
         taxiLegs: [
-          { from: origin, to: entryPoint },
-          { from: exitPoint, to: destination },
+          { from: origin, to: entryPoint, path: driving1.path, type: 'taxi' },
+          { from: exitPoint, to: destination, path: driving2.path, type: 'taxi' },
         ],
         trafficSpeedKmh: Math.round(Math.min(driving1.speedMps, driving2.speedMps) * 3.6),
       },
@@ -1219,6 +1225,17 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     dataSource: taxiEst.source,
     answerRate: taxiEst.answerRate,
     didiDurationMinutes: taxiEst.didiDurationMinutes,
-    raw: { station, taxiDistance, taxiCost, transitCost, trafficSpeedKmh: speedKmh },
+    raw: {
+      station,
+      // 保留高德原始公交段，地图才能按真实轨迹绘制公交/步行部分。
+      segments: (plan.segments || []).slice(0, station.segmentIndex + 1),
+      taxiLegs: [{
+        from: [station.location.lng, station.location.lat],
+        to: endLngLat,
+        path: driving.path,
+        type: 'taxi',
+      }],
+      taxiDistance, taxiCost, transitCost, trafficSpeedKmh: speedKmh,
+    },
   };
 }

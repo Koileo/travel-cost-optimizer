@@ -87,6 +87,15 @@ function saveSearchState() {
       // AMap LngLat 对象用 getter (lng/lat)，JSON.stringify 后变成 {}，
       // 必须先转为 [lng, lat] 数组才能序列化
       const toCoord = p => (p && typeof p.lng === 'number') ? [p.lng, p.lat] : p;
+      const toLeg = leg => {
+        if (!leg) return leg;
+        return {
+          ...leg,
+          from: toCoord(leg.from),
+          to: toCoord(leg.to),
+          path: Array.isArray(leg.path) ? leg.path.map(toCoord) : leg.path,
+        };
+      };
       const toLocation = loc => (loc && typeof loc.lng === 'number') ? { lng: loc.lng, lat: loc.lat } : loc;
 
       const slimRoutes = allRoutes.map(r => {
@@ -116,8 +125,8 @@ function saveSearchState() {
               return s;
             });
           }
-          if (raw.taxiLegs) slimRaw.taxiLegs = raw.taxiLegs;                 // hybrid 打车段 (已是数组)
-          if (raw.endpointLegs) slimRaw.endpointLegs = raw.endpointLegs;     // hybrid 端点 (已是数组)
+          if (raw.taxiLegs) slimRaw.taxiLegs = raw.taxiLegs.map(toLeg);       // hybrid 打车段
+          if (raw.endpointLegs) slimRaw.endpointLegs = raw.endpointLegs.map(toLeg); // hybrid 端点
           if (raw.taxiCost != null) slimRaw.taxiCost = raw.taxiCost;
           if (raw.transitCost != null) slimRaw.transitCost = raw.transitCost;
           if (raw.trafficSpeedKmh != null) slimRaw.trafficSpeedKmh = raw.trafficSpeedKmh;

@@ -30,6 +30,65 @@ function descriptionToHtml(desc) {
   }).join('<span class="desc-arrow">→</span>');
 }
 
+// 高德不同路线插件返回的坐标格式并不完全一致：JS SDK 通常返回
+// LngLat[]，缓存结果会变成 [lng, lat][]，部分 Web 服务结果则是
+// "lng,lat;lng,lat"。地图绘制统一在这里做归一化，避免因为字段格式
+// 差异退化成起终点直线。
+function mapCoordinatePair(point) {
+  if (Array.isArray(point) && point.length >= 2) {
+    const lng = Number(point[0]), lat = Number(point[1]);
+    return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+  }
+  if (point && typeof point.getLng === 'function' && typeof point.getLat === 'function') {
+    const lng = Number(point.getLng()), lat = Number(point.getLat());
+    return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+  }
+  if (point && Number.isFinite(Number(point.lng)) && Number.isFinite(Number(point.lat))) {
+    return [Number(point.lng), Number(point.lat)];
+  }
+  return null;
+}
+
+function normalizeMapPath(value) {
+  if (typeof value === 'string') {
+    return value.split(';').map(pair => {
+      const [lng, lat] = pair.split(',').map(Number);
+      return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+    }).filter(Boolean);
+  }
+  return Array.isArray(value) ? value.map(mapCoordinatePair).filter(Boolean) : [];
+}
+
+function getSegmentMapPath(segment) {
+  const transit = segment?.transit || {};
+  const walking = segment?.walking || {};
+  const directCandidates = [
+    transit.path, transit.polyline,
+    segment?.path, segment?.polyline,
+    walking.path, walking.polyline,
+  ];
+  for (const candidate of directCandidates) {
+    const path = normalizeMapPath(candidate);
+    if (path.length >= 2) return path;
+  }
+
+  // 兼容旧版/代理结果：步行步骤的轨迹字段可能叫 path 或 polyline。
+  const steps = Array.isArray(walking.steps) ? walking.steps : [];
+  const stepPath = steps.flatMap(step => normalizeMapPath(step?.path || step?.polyline));
+  return stepPath.length >= 2 ? stepPath : [];
+}
+
+function getRouteMapPath(route) {
+  const directCandidates = [route?.path, route?.polyline];
+  for (const candidate of directCandidates) {
+    const path = normalizeMapPath(candidate);
+    if (path.length >= 2) return path;
+  }
+  const steps = Array.isArray(route?.steps) ? route.steps : [];
+  const stepPath = steps.flatMap(step => normalizeMapPath(step?.path || step?.polyline));
+  return stepPath.length >= 2 ? stepPath : [];
+}
+
 // 徽章配置
 
 async function fetchWeather(city) {
@@ -421,8 +480,8 @@ function drawRouteOnMap(route) {
   clearRouteOverlays();
   if (!map || !route) return;
 
-  // 坐标统一转换：支持 {lng,lat}（实时）和 [lng,lat]（缓存）
-  const toXY = p => (Array.isArray(p) ? p : (p && typeof p.lng === 'number' ? [p.lng, p.lat] : null));
+  // 坐标统一转换：支持 SDK LngLat、{lng,lat}（实时）和 [lng,lat]（缓存）
+  const toXY = mapCoordinatePair;
 
   const COLORS = {
     SUBWAY: '#16B364', BUS: '#3B82F6', WALK: '#94A3B8', RIDE: '#06B6D4', TAXI: '#F59E0B',
@@ -511,19 +570,9 @@ function drawRouteOnMap(route) {
       const mode = seg.transit_mode;
 
       if (mode === 'WALK') {
-        // 构建步行精确路径：优先 steps[].path → walking.path → 起终点直线
-        const walkPath = [];
-        if (seg.walking && Array.isArray(seg.walking.steps)) {
-          seg.walking.steps.forEach(step => {
-            if (step.path && Array.isArray(step.path)) {
-              step.path.forEach(p => { const xy = toXY(p); if (xy) walkPath.push(xy); });
-            }
-          });
-        }
-        // steps 没有路径时用 walking.path
-        if (walkPath.length < 2 && seg.walking && Array.isArray(seg.walking.path)) {
-          seg.walking.path.forEach(p => { const xy = toXY(p); if (xy) walkPath.push(xy); });
-        }
+        // 高德 Transfer 的精确轨迹位于 seg.transit.path（包括 WALK），
+        // 兼容旧结果中的 walking.path / walking.steps[].path。
+        const walkPath = getSegmentMapPath(seg);
 
         // 下一段的 on_station 是 walking 的终点
         const nextSeg = segs[i + 1];
@@ -540,8 +589,9 @@ function drawRouteOnMap(route) {
           addLine([prevPoint, walkEnd], COLORS.WALK, { weight: 3, dashed: true, opacity: 0.6, noOutline: true });
           prevPoint = walkEnd;
         }
-      } else if (mode === 'SUBWAY' || mode === 'BUS') {
+      } else if (mode === 'SUBWAY' || mode === 'BUS' || mode === 'METRO_RAIL') {
         const transit = seg.transit || {};
+        const colorMode = mode === 'METRO_RAIL' ? 'SUBWAY' : mode;
         const onLoc = transit.on_station && isValidLocation(transit.on_station.location)
           ? [transit.on_station.location.lng, transit.on_station.location.lat] : null;
         const offLoc = transit.off_station && isValidLocation(transit.off_station.location)
@@ -556,25 +606,20 @@ function drawRouteOnMap(route) {
           addLine([prevPoint, onLoc], COLORS.WALK, { weight: 2, dashed: true, opacity: 0.5, noOutline: true });
         }
 
-        // 公交/地铁线路：优先用 transit.path（中间坐标），兜底直线
-        const transitPath = transit.path;
-        if (Array.isArray(transitPath) && transitPath.length >= 2) {
-          const points = transitPath.map(toXY).filter(Boolean);
-          if (points.length >= 2) {
-            addLine(points, COLORS[mode], { weight: 5 });
-          } else if (onLoc && offLoc) {
-            addLine([onLoc, offLoc], COLORS[mode], { weight: 5 });
-          }
+        // 公交/地铁线路：优先用高德真实轨迹，只有结果确实没有轨迹时才直线兜底。
+        const transitPath = getSegmentMapPath(seg);
+        if (transitPath.length >= 2) {
+          addLine(transitPath, COLORS[colorMode], { weight: 5 });
         } else if (onLoc && offLoc) {
-          addLine([onLoc, offLoc], COLORS[mode], { weight: 5 });
+          addLine([onLoc, offLoc], COLORS[colorMode], { weight: 5 });
         }
 
         // 站点标记
         if (onLoc) {
-          addStation(onLoc, transit.on_station.name || '上车', mode);
+          addStation(onLoc, transit.on_station.name || '上车', colorMode);
         }
         if (offLoc) {
-          addStation(offLoc, transit.off_station.name || '下车', mode);
+          addStation(offLoc, transit.off_station.name || '下车', colorMode);
         }
 
         prevPoint = offLoc || prevPoint;
@@ -590,10 +635,9 @@ function drawRouteOnMap(route) {
   // ── Taxi / Walk / Ride：用 AMap 返回的详细 path ──
   if ((route.type === 'taxi' || route.type === 'walk' || route.type === 'ride') && route.raw) {
     const mode = route.type === 'ride' ? 'RIDE' : route.type === 'taxi' ? 'TAXI' : 'WALK';
-    const rawPath = route.raw.path;
-    if (Array.isArray(rawPath) && rawPath.length >= 2) {
-      const points = rawPath.map(toXY).filter(Boolean);
-      addLine(points, COLORS[mode], {
+    const rawPath = getRouteMapPath(route.raw);
+    if (rawPath.length >= 2) {
+      addLine(rawPath, COLORS[mode], {
         weight: route.type === 'taxi' ? 6 : route.type === 'ride' ? 5 : 3,
         dashed: route.type === 'walk',
         opacity: route.type === 'walk' ? 0.75 : 0.85,
@@ -611,89 +655,89 @@ function drawRouteOnMap(route) {
   // ── Hybrid 路线 ──
   if (route.type === 'hybrid') {
     const rawSegs = route.raw && route.raw.segments;
-    if ((route.direction === 'taxi-transit-taxi' || route.direction === 'multimodal') && route.raw) {
-      (route.raw.endpointLegs || route.raw.taxiLegs || []).forEach(leg => {
-        if (Array.isArray(leg.from) && Array.isArray(leg.to)) {
-          const mode = String(leg.type || 'taxi').toUpperCase();
-          addLine([leg.from, leg.to], COLORS[mode] || COLORS.WALK, {
-            weight: mode === 'WALK' ? 3 : 5,
-            dashed: mode === 'WALK',
-            opacity: mode === 'WALK' ? 0.65 : 0.85,
-          });
-        }
+    const startPoint = startPOI && isValidLocation(startPOI.location)
+      ? [startPOI.location.lng, startPOI.location.lat] : null;
+    const endPoint = endPOI && isValidLocation(endPOI.location)
+      ? [endPOI.location.lng, endPOI.location.lat] : null;
+
+    const samePoint = (a, b) => a && b && Math.abs(a[0] - b[0]) < 0.00001 && Math.abs(a[1] - b[1]) < 0.00001;
+
+    // 混合方案里的打车/步行/骑行段现在保留了规划返回的 path；旧缓存没有 path
+    // 时仍保留 from/to 直线作为最后兜底。
+    const drawEndpointLeg = leg => {
+      const from = toXY(leg?.from);
+      const to = toXY(leg?.to);
+      if (!from || !to) return;
+      const mode = String(leg.type || 'taxi').toUpperCase();
+      const path = getRouteMapPath({ path: leg.path, polyline: leg.polyline, steps: leg.steps });
+      const linePath = path.length >= 2 ? path : [from, to];
+      addLine(linePath, COLORS[mode] || COLORS.WALK, {
+        weight: mode === 'WALK' ? 3 : 5,
+        dashed: mode === 'WALK',
+        opacity: mode === 'WALK' ? 0.65 : 0.85,
+        noOutline: mode === 'WALK',
       });
-      (rawSegs || []).forEach(seg => {
+    };
+
+    // 统一绘制高德 Transfer 原始段。关键是 WALK 也读取 segment.transit.path，
+    // 否则起点到地铁站、换乘步行和终点接驳都会变成直线。
+    const drawRawTransitSegments = (segments, initialPoint = null, finalPoint = null) => {
+      let prev = initialPoint;
+      (segments || []).forEach((seg, index, all) => {
         const mode = seg.transit_mode;
-        if (mode !== 'SUBWAY' && mode !== 'BUS') return;
         const transit = seg.transit || {};
+        const path = getSegmentMapPath(seg);
+
+        if (mode === 'WALK') {
+          const nextTransit = all[index + 1]?.transit;
+          const nextLocation = nextTransit?.on_station?.location || transit.destination;
+          const walkEnd = toXY(nextLocation) || finalPoint;
+          if (path.length >= 2) {
+            addLine(path, COLORS.WALK, { weight: 3, dashed: true, opacity: 0.65, noOutline: true });
+            prev = path[path.length - 1];
+          } else if (prev && walkEnd) {
+            addLine([prev, walkEnd], COLORS.WALK, { weight: 3, dashed: true, opacity: 0.65, noOutline: true });
+            prev = walkEnd;
+          }
+          return;
+        }
+
+        if (mode !== 'SUBWAY' && mode !== 'BUS' && mode !== 'METRO_RAIL') return;
         const onStation = transit.on_station;
         const offStation = transit.off_station;
-        if (!isValidLocation(onStation?.location) || !isValidLocation(offStation?.location)) return;
-        const onPoint = [onStation.location.lng, onStation.location.lat];
-        const offPoint = [offStation.location.lng, offStation.location.lat];
-
-        // 优先用 transit.path（详细轨迹），兜底直线
-        const transitPath = transit.path;
-        if (Array.isArray(transitPath) && transitPath.length >= 2) {
-          const points = transitPath.map(toXY).filter(Boolean);
-          addLine(points.length >= 2 ? points : [onPoint, offPoint], COLORS[mode], { weight: 5 });
-        } else {
-          addLine([onPoint, offPoint], COLORS[mode], { weight: 5 });
+        const onPoint = toXY(onStation?.location || transit.origin);
+        const offPoint = toXY(offStation?.location || transit.destination);
+        const linePath = path.length >= 2 ? path : (onPoint && offPoint ? [onPoint, offPoint] : []);
+        if (linePath.length >= 2) {
+          const colorMode = mode === 'METRO_RAIL' ? 'SUBWAY' : mode;
+          addLine(linePath, COLORS[colorMode], { weight: 5 });
+          prev = linePath[linePath.length - 1];
         }
-
-        addStation(onPoint, onStation.name || '上车', mode);
-        addStation(offPoint, offStation.name || '下车', mode);
+        if (onPoint) addStation(onPoint, onStation?.name || '上车', mode === 'METRO_RAIL' ? 'SUBWAY' : mode);
+        if (offPoint) addStation(offPoint, offStation?.name || '下车', mode === 'METRO_RAIL' ? 'SUBWAY' : mode);
+        if (offPoint) prev = offPoint;
       });
-    }
+      if (finalPoint && prev && !samePoint(prev, finalPoint)) {
+        addLine([prev, finalPoint], COLORS.WALK, { weight: 3, dashed: true, opacity: 0.65, noOutline: true });
+      }
+    };
 
-    // 特殊处理 taxi-to-transit：先画打车段
-    if (route.direction === 'taxi-to-transit' && rawSegs && startPOI) {
-      const firstOn = rawSegs.find(s => s.transit_mode !== 'WALK');
-      const onLoc = firstOn && firstOn.transit && firstOn.transit.on_station
-        && firstOn.transit.on_station.location;
-      if (onLoc && isValidLocation(onLoc)) {
-        addLine(
-          [[startPOI.location.lng, startPOI.location.lat], [onLoc.lng, onLoc.lat]],
-          COLORS.TAXI, { weight: 5 }
-        );
-        addStation([onLoc.lng, onLoc.lat],
-          firstOn.transit.on_station.name || '上车点', firstOn.transit_mode);
+    if (route.raw) {
+      (route.raw.endpointLegs || route.raw.taxiLegs || []).forEach(drawEndpointLeg);
+      drawRawTransitSegments(rawSegs, route.direction === 'transit-to-taxi' ? startPoint : null, null);
+
+      // 兼容旧缓存：当时没有保存 taxiLegs，按方案方向补画接驳段。
+      if (!(route.raw.endpointLegs || route.raw.taxiLegs || []).length) {
+        if (route.direction === 'taxi-to-transit' && startPoint) {
+          const first = (rawSegs || []).find(seg => seg.transit_mode === 'SUBWAY' || seg.transit_mode === 'BUS');
+          const target = toXY(first?.transit?.on_station?.location);
+          if (target) drawEndpointLeg({ type: 'taxi', from: startPoint, to: target });
+        } else if (route.direction === 'transit-to-taxi' && endPoint) {
+          const station = toXY(route.raw.station?.location);
+          if (station) drawEndpointLeg({ type: 'taxi', from: station, to: endPoint });
+        }
       }
     }
-
-    // 画 remaining 段（AMap transit/walk）
-    if (rawSegs) {
-      const segs = rawSegs;
-      let prev = startPOI && isValidLocation(startPOI.location)
-        ? [startPOI.location.lng, startPOI.location.lat] : null;
-
-      segs.forEach(seg => {
-        if (seg.type === 'taxi' || seg.mode === 'taxi') {
-        if (seg.points && Array.isArray(seg.points)) {
-          addLine(seg.points, COLORS.TAXI, { weight: 5 });
-          prev = seg.points[seg.points.length - 1];
-        }
-        if (seg.stationLocation && isValidLocation(seg.stationLocation)) {
-          addStation([seg.stationLocation.lng, seg.stationLocation.lat],
-            seg.stationName || '换乘站', 'BUS');
-        }
-        if (seg.viaStation && !seg.stationLocation) {
-          // label-only station
-        }
-      } else if (seg.type === 'transit' || seg.mode === 'transit') {
-        if (prev && seg.stationLocation && isValidLocation(seg.stationLocation)) {
-          addLine([prev, [seg.stationLocation.lng, seg.stationLocation.lat]],
-            COLORS.WALK, { weight: 2, dashed: true, opacity: 0.5 });
-        }
-        if (seg.stationLocation && isValidLocation(seg.stationLocation)) {
-          const mode = (seg.transitMode === 'SUBWAY') ? 'SUBWAY' : 'BUS';
-          addStation([seg.stationLocation.lng, seg.stationLocation.lat],
-            seg.lineName || '乘车', mode);
-        }
-        prev = null; // 公交段结束后由下一段确定位置
-      }
-    });
-  }
   }
 
   // 自适应视野（只传有效 overlay）
