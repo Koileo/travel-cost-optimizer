@@ -905,12 +905,12 @@ body {
   font-size: 11px;
 }
 
-.result-source.is-mcp {
+.result-source.is-amap {
   background: var(--accent-soft);
   color: var(--accent-text);
 }
 
-.result-source.is-mcp > [data-lucide] {
+.result-source.is-amap > [data-lucide] {
   color: var(--accent);
 }
 

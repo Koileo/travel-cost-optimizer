@@ -1,4 +1,4 @@
-// 08-settings.js — split from app-client.js
+// 08-settings.js — 设置面板
 // 出行成本优化器
 const settingsModal = document.getElementById('settings-modal');
 const settingsBtn = document.getElementById('settings-btn');
@@ -40,12 +40,6 @@ function saveSettings(s) {
 }
 
 let appSettings = loadSettings();
-
-function isMcpConfigured() {
-  // 本地代理从服务端环境变量读取 key，浏览器无需持有它。
-  if (isLocalMcpProxy()) return !!(appSettings.mcpUrl && appSettings.mcpTool);
-  return !!(appSettings.mcpUrl && appSettings.mcpKey && appSettings.mcpTool);
-}
 
 function formatSettingsJson(value) {
   return Object.keys(value || {}).length ? JSON.stringify(value, null, 2) : '';

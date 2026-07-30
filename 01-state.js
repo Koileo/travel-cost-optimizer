@@ -1,4 +1,4 @@
-// 01-state.js — split from app-client.js
+// 01-state.js — 客户端状态
 // 出行成本优化器
 const AMAP_KEY = '0d6897af1d905d14d1dc553850ee051f';
 let map, transfer;

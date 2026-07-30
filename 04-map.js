@@ -1,4 +1,4 @@
-// 04-map.js — split from app-client.js
+// 04-map.js — 地图与路线展示
 // 出行成本优化器
 const ICON_MAP = {
   '🚇': 'train-front',
@@ -746,15 +746,12 @@ function refreshMapStyle() {
 }
 
 // ===========================================================================
-// 滴滴 MCP 客户端
+// 设置存储
 // ===========================================================================
 
 // 设置存储（localStorage）
 const SETTINGS_KEY = 'travel-optimizer-settings';
 const DEFAULT_SETTINGS = {
-  mcpUrl: 'https://mcp.didichuxing.com/mcp-servers',
-  mcpKey: '',
-  mcpTool: 'taxi_estimate',
   city: '北京',
   didiEndpoint: 'https://api.udache.com/gulfstream/pre-sale/v1/core/pMultiEstimatePriceV3',
   didiHeaders: {},

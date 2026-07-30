@@ -1,4 +1,4 @@
-// 02-utils.js — split from app-client.js
+// 02-utils.js — 工具函数
 // 出行成本优化器
 function calculateDistance(p1, p2) {
   if (!p1 || !p2) return 0;

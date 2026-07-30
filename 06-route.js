@@ -1,4 +1,4 @@
-// 06-route.js — split from app-client.js
+// 06-route.js — 路线查询
 // 出行成本优化器
 async function searchRoutes() {
   if (!startPOI || !endPOI) {
@@ -100,6 +100,30 @@ async function searchRoutes() {
     searchBtn.querySelector('.btn-text').hidden = false;
     searchBtn.querySelector('.btn-loading').hidden = true;
   }
+}
+
+// 检测打车路线中的拥堵路段。
+// 超过 3.6 分钟/公里标记为拥堵，超过 5.4 分钟/公里标记为严重拥堵。
+function detectTaxiCongestion(taxiRoute) {
+  if (!taxiRoute?.raw || !Array.isArray(taxiRoute.raw.steps)) return null;
+
+  let worstRatio = 0;
+  let worstStep = null;
+  taxiRoute.raw.steps.forEach(step => {
+    const distance = Number(step.distance) || 0;
+    const time = Number(step.time) || 0;
+    if (distance < 800) return;
+
+    const ratio = time / distance; // 秒/米，越大越拥堵
+    if (ratio > worstRatio) {
+      worstRatio = ratio;
+      worstStep = step;
+    }
+  });
+
+  if (worstRatio > 0.18) return { severity: 'heavy', ratio: worstRatio, step: worstStep };
+  if (worstRatio > 0.12) return { severity: 'moderate', ratio: worstRatio, step: worstStep };
+  return null;
 }
 
 // 从完整打车路线里提取「含实时路况」的平均车速（m/s）
@@ -985,4 +1009,3 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     raw: { station, taxiDistance, taxiCost, transitCost, trafficSpeedKmh: speedKmh },
   };
 }
-

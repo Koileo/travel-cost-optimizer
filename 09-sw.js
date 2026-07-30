@@ -1,4 +1,4 @@
-// 09-sw.js — split from app-client.js
+// 09-sw.js — Service Worker 注册
 // 出行成本优化器
 // 出行成本优化器 - App.js
 

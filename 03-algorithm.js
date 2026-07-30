@@ -1,4 +1,4 @@
-// 03-algorithm.js — split from app-client.js
+// 03-algorithm.js — 路线算法
 // 出行成本优化器
 function getComfortCost(route) {
   const segments = Array.isArray(route?.segments) && route.segments.length

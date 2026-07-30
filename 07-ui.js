@@ -1,4 +1,4 @@
-// 07-ui.js — split from app-client.js
+// 07-ui.js — 界面渲染
 // 出行成本优化器
 function refreshIcons() {
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
@@ -252,7 +252,7 @@ function renderResults(routes) {
       } else if (ds === 'amap') {
         sourceIcon = 'map-pin';
         sourceLabel = '高德驾车预估';
-        sourceClass = 'is-mcp';
+        sourceClass = 'is-amap';
       } else {
         sourceIcon = 'alert-triangle';
         sourceLabel = `叫车不确定 · ${appSettings.city}`;
