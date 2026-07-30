@@ -54,7 +54,12 @@ async function searchRoutes() {
       searchTaxiToTransit(traffic, transitResult, fullTaxiCost),
       searchTaxiTransitTaxi(traffic, transitResult, fullTaxiCost),
     ]);
-    const hybridRoutes = [...multimodalRoutes, ...busThenTaxiRoutes, ...taxiToTransitRoutes, ...taxiTransitTaxiRoutes];
+    const hybridRoutes = dedupeHybridRoutes([
+      ...multimodalRoutes,
+      ...busThenTaxiRoutes,
+      ...taxiToTransitRoutes,
+      ...taxiTransitTaxiRoutes,
+    ]);
     allRoutes = [...transitRoutes, ...walkingRoutes, ...ridingRoutes, ...taxiRoutes, ...hybridRoutes]
       .filter(route => countTaxiSegments(route) <= 2);
 
@@ -225,55 +230,9 @@ function searchFullTaxi() {
               category: 'taxi',
               type: 'taxi',
               cost: Math.round(taxiEst.cost * 100) / 100,
-              time: Math.round(time / 60),
+              time: Math.round(withTaxiPickup(time) / 60),
               distance,
-              segments: [{ type: 'taxi', distance, time, lineName: `全程打车${carTypeLabel}` }],
-              description: `🚕 全程打车 ${distanceKm} km${carTypeLabel}`,
-              dataSource,
-              answerRate: taxiEst.answerRate,
-              didiDurationMinutes: taxiEst.didiDurationMinutes,
-              raw: route,
-            }]);
-          });
-        } else {
-          resolve([]);
-        }
-      });
-    });
-  });
-}
-
-
-function searchFullTaxi() {
-  return new Promise((resolve) => {
-    AMap.plugin('AMap.Driving', () => {
-      const driving = new AMap.Driving({ panel: null });
-      driving.search(startPOI.location, endPOI.location, (status, result) => {
-        if (status === 'complete' && result.routes && result.routes.length > 0) {
-          const route = result.routes[0];
-          const distance = route.distance || 0;
-          // 综合步行时间+天气判断打车是否值得
-          const taxiCheck = isTaxiWorthIt(distance, { isFullTrip: true });
-          if (!taxiCheck.worthIt) {
-            resolve([]);
-            return;
-          }
-          const time = route.time || 0;
-          const distanceKm = Math.round(distance / 100) / 10;
-
-          // 用高德驾车 API 的 taxi_cost 估算价格，失败时回退本地规则。
-          estimateTaxi(distance, time, startPOI.location, endPOI.location).then(taxiEst => {
-            const dataSource = taxiEst.source; // 'didi' | 'amap' | 'local'
-            const carTypeLabel = taxiEst.carType ? ` · ${taxiEst.carType}` : '';
-
-            resolve([{
-              id: 'taxi-only',
-              category: 'taxi',
-              type: 'taxi',
-              cost: Math.round(taxiEst.cost * 100) / 100,
-              time: Math.round(time / 60),
-              distance,
-              segments: [{ type: 'taxi', distance, time, lineName: `全程打车${carTypeLabel}` }],
+              segments: [{ type: 'taxi', distance, time: withTaxiPickup(time), lineName: `全程打车${carTypeLabel}` }],
               description: `🚕 全程打车 ${distanceKm} km${carTypeLabel}`,
               dataSource,
               answerRate: taxiEst.answerRate,
@@ -366,6 +325,44 @@ function createTransitMiddleSegments(segments) {
   });
 }
 
+// 接驳打车的路线时间必须包含叫车/上车缓冲；否则混合方案会系统性地显得过快。
+const TAXI_PICKUP_SECONDS = 5 * 60;
+
+function withTaxiPickup(seconds, taxiSegments = 1) {
+  return seconds + TAXI_PICKUP_SECONDS * taxiSegments;
+}
+
+// 高德会给出许多途经站。先挑出具有代表性的站点，避免一次查询发起几十个实时估价。
+function selectHybridStationCandidates(candidates, limit = 8) {
+  return candidates
+    .filter(({ station }) => station.ratio >= 0.25 && station.ratio <= 0.9)
+    .sort((a, b) => {
+      const score = candidate =>
+        Math.abs(candidate.station.ratio - 0.65) -
+        (candidate.station.transitMode === 'SUBWAY' ? 0.08 : 0) -
+        Math.min(candidate.station.segmentDistance || 0, 5000) / 100000;
+      return score(a) - score(b);
+    })
+    .slice(0, limit);
+}
+
+// 同一组接驳站与线路可能由多个高德 plan 重复返回；只保留成本/时间更优的一条。
+function dedupeHybridRoutes(routes) {
+  const bestBySignature = new Map();
+  for (const route of routes) {
+    const signature = (route.segments || []).map(segment => {
+      if (segment.type === 'taxi') return `taxi:${segment.fromStation || ''}>${segment.toStation || ''}`;
+      if (segment.type === 'transit') return `transit:${segment.lineName || ''}:${segment.fromStation || ''}>${segment.toStation || ''}`;
+      return segment.type || 'other';
+    }).join('|');
+    const previous = bestBySignature.get(signature);
+    if (!previous || route.cost < previous.cost || (route.cost === previous.cost && route.time < previous.time)) {
+      bestBySignature.set(signature, route);
+    }
+  }
+  return [...bestBySignature.values()];
+}
+
 async function createEndpointVariants({
   side, station, rawDistance, rawTime, traffic, origin, destination,
 }) {
@@ -410,10 +407,10 @@ async function createEndpointVariants({
     // 每一段独立估价，Didi 或本地兜底都会为这一段单独计算起步价。
     variants.push({
       type: 'taxi', icon: '🚕', label: `打车${carTypeSuffix}`, distance: taxiDistance,
-      time: drivingTime + 5 * 60, cost: estimate.cost, taxiCost: estimate.cost,
+      time: withTaxiPickup(drivingTime), cost: estimate.cost, taxiCost: estimate.cost,
       taxiSegments: 1, dataSource: estimate.source,
       answerRate: estimate.answerRate, didiDurationMinutes: estimate.didiDurationMinutes,
-      segment: { type: 'taxi', distance: taxiDistance, time: drivingTime + 5 * 60, fromStation: fromName, toStation: toName },
+      segment: { type: 'taxi', distance: taxiDistance, time: withTaxiPickup(drivingTime), fromStation: fromName, toStation: toName },
       mapLeg: { type: 'taxi', from, to },
       actualSpeedMps: driving.speedMps,
     });
@@ -527,7 +524,7 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
     return routes;
   }));
 
-  return planRoutes.flat();
+  return dedupeHybridRoutes(planRoutes.flat());
 }
 
 async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, fullTaxiTotal = null) {
@@ -567,15 +564,16 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   }
 
   // 算出每个候选站点的「公交累计 + 打车到终点」成本
+  const selectedCandidates = selectHybridStationCandidates(candidates);
   const hybrids = (await Promise.all(
-    candidates.map(c => buildHybridFromStation(c.plan, c.station, endLngLat, traffic))
+    selectedCandidates.map(c => buildHybridFromStation(c.plan, c.station, endLngLat, traffic))
   ))
     .filter(Boolean)
     .filter(h => isFinite(h.cost) && h.cost <= getHybridCostCeiling(fullTaxiCost))
     .sort((a, b) => a.cost - b.cost)
     .slice(0, 8);
 
-  console.log(`[hybrid] candidates=${candidates.length}, taxiThreshold=${fullTaxiCost.toFixed(2)}, kept=${hybrids.length}`);
+  console.log(`[hybrid] candidates=${candidates.length}, selected=${selectedCandidates.length}, taxiThreshold=${fullTaxiCost.toFixed(2)}, kept=${hybrids.length}`);
 
   return hybrids;
 }
@@ -651,7 +649,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     if (!isFinite(taxiCost)) return null;
 
     // 时间：打车 + 剩余的公交时间（包含后续所有段）
-    const taxiTime = Math.round(taxiTimeSec / 60);
+    const taxiTime = Math.round(withTaxiPickup(taxiTimeSec) / 60);
     const remainingTransitTime = Math.round(
       c.segments.slice(c.firstTransitIdx).reduce((sum, s) => sum + (s.time || 0), 0) / 60
     );
@@ -667,7 +665,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     const remainingSegs = c.segments.slice(c.firstTransitIdx);
     const carTypeLabel = taxiEst.carType ? ` · ${taxiEst.carType}` : '';
     const detailSegments = [{
-      type: 'taxi', distance: taxiDistance, lineName: `打车${carTypeLabel}到 ${c.onStation.name}`,
+      type: 'taxi', distance: taxiDistance, time: withTaxiPickup(taxiTimeSec), lineName: `打车${carTypeLabel}到 ${c.onStation.name}`,
       fromStation: startPOI.name, toStation: c.onStation.name
     }];
     const descParts = [];
@@ -818,7 +816,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const detailSegments = [{
       type: 'taxi',
       distance: firstTaxiDistance,
-      time: firstTaxiSeconds,
+      time: withTaxiPickup(firstTaxiSeconds),
       lineName: `打车${car1}到 ${candidate.entry.name}`,
       fromStation: startPOI.name,
       toStation: candidate.entry.name,
@@ -843,7 +841,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     detailSegments.push({
       type: 'taxi',
       distance: secondTaxiDistance,
-      time: secondTaxiSeconds,
+      time: withTaxiPickup(secondTaxiSeconds),
       lineName: `打车${car2}到 ${endPOI.name}`,
       fromStation: candidate.exit.name,
       toStation: endPOI.name,
@@ -860,7 +858,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       type: 'hybrid',
       direction: 'taxi-transit-taxi',
       cost: Math.round(totalCost * 100) / 100,
-      time: Math.max(1, Math.round((firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds) / 60)),
+      time: Math.max(1, Math.round(withTaxiPickup(firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds, 2) / 60)),
       distance: firstTaxiDistance + middleRawSegments.reduce((sum, seg) => sum + (seg.distance || 0), 0) + secondTaxiDistance,
       segments: detailSegments,
       description: `🚕${car1} 到 ${candidate.entry.name} → ${transitLabels.join(' → ')} → 🚕${car2} 到终点`,
@@ -981,7 +979,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
 
   // 时间：公交耗时按占比 + 打车耗时（实时路况）
   const transitTime = Math.round((plan.time || 0) / 60 * station.ratio);
-  const taxiTime = Math.round(driving.time / 60);
+  const taxiTime = Math.round(withTaxiPickup(driving.time) / 60);
   const totalTime = transitTime + taxiTime;
   if (!isFinite(totalTime) || totalTime <= 0) return null;
 
@@ -1008,7 +1006,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     distance: (plan.distance || 0) * station.ratio + taxiDistance,
     segments: [
       ...transitLegs.map(l => ({ ...l, type: 'transit' })),
-      { type: 'taxi', distance: taxiDistance, lineName: `打车${carTypeSuffix}到 ${endPOI ? endPOI.name : '目的地'}`,
+      { type: 'taxi', distance: taxiDistance, time: withTaxiPickup(driving.time), lineName: `打车${carTypeSuffix}到 ${endPOI ? endPOI.name : '目的地'}`,
         fromStation: station.name, toStation: endPOI ? endPOI.name : '目的地' },
     ],
     description: `${station.transitMode === 'SUBWAY' ? '🚇' : '🚌'} ${stationDisplay} 到 ${station.name} → 🚕 打车${carTypeSuffix} ${taxiDistanceKm} km`,
