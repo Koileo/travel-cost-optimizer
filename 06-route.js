@@ -663,6 +663,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
 
     // 拆出所有 remaining 段（transit + walk），每段单独显示
     const remainingSegs = c.segments.slice(c.firstTransitIdx);
+    const remainingDistance = remainingSegs.reduce((sum, segment) => sum + (segment.distance || 0), 0);
     const carTypeLabel = taxiEst.carType ? ` · ${taxiEst.carType}` : '';
     const detailSegments = [{
       type: 'taxi', distance: taxiDistance, time: withTaxiPickup(taxiTimeSec), lineName: `打车${carTypeLabel}到 ${c.onStation.name}`,
@@ -684,6 +685,9 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
         const isSubway = s.transit_mode === 'SUBWAY';
         detailSegments.push({
           type: 'transit', mode: s.transit_mode,
+          transitMode: s.transit_mode,
+          distance: s.distance || 0,
+          time: s.time || 0,
           lineName: info.direction ? `${info.line} · ${info.direction}` : info.line,
           fromStation: onName, toStation: offName,
         });
@@ -701,7 +705,8 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       direction: 'taxi-to-transit',
       cost: Math.round(totalCost * 100) / 100,
       time: totalTime,
-      distance: taxiDistance + (c.plan.distance || 0),
+      // 原 plan.distance 包含已被打车替代的起点步行段，这里只计剩余公交链路。
+      distance: taxiDistance + remainingDistance,
       segments: detailSegments,
       description: desc,
       dataSource: taxiEst.source,
@@ -832,6 +837,9 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       detailSegments.push({
         type: 'transit',
         mode: seg.transit_mode,
+        transitMode: seg.transit_mode,
+        distance: seg.distance || 0,
+        time: seg.time || 0,
         lineName: info.direction ? `${info.line} · ${info.direction}` : info.line,
         fromStation: seg.transit?.on_station?.name || '上车',
         toStation: seg.transit?.off_station?.name || '下车',
@@ -947,33 +955,52 @@ function collectTransferStations(plan) {
   return stations;
 }
 
+function createTransitPrefixSegments(plan, station) {
+  const prefixSegments = [];
+  const segments = plan?.segments || [];
+
+  for (let index = 0; index <= station.segmentIndex; index++) {
+    const segment = segments[index];
+    if (!segment) continue;
+    const fraction = index === station.segmentIndex ? (station.segmentFraction ?? 1) : 1;
+
+    if (segment.transit_mode === 'WALK') {
+      prefixSegments.push({
+        type: 'walk',
+        distance: (segment.distance || 0) * fraction,
+        time: (segment.time || 0) * fraction,
+      });
+      continue;
+    }
+    if (segment.transit_mode !== 'SUBWAY' && segment.transit_mode !== 'BUS') continue;
+
+    const lines = segment.transit?.lines || [];
+    prefixSegments.push({
+      type: 'transit',
+      mode: segment.transit_mode,
+      transitMode: segment.transit_mode,
+      lineName: lines[0]?.name || (segment.transit_mode === 'SUBWAY' ? '地铁' : '公交'),
+      price: 0,
+      distance: (segment.distance || 0) * fraction,
+      time: (segment.time || 0) * fraction,
+      fromStation: segment.transit?.on_station?.name || '',
+      toStation: index === station.segmentIndex && fraction < 1
+        ? station.name
+        : (segment.transit?.off_station?.name || ''),
+    });
+  }
+  return prefixSegments;
+}
+
 // 用指定换乘站构建一个混合方案
 // traffic.speedMps —— 来自完整打车路线的「含实时路况」平均车速（m/s）
 async function buildHybridFromStation(plan, station, endLngLat, traffic = { speedMps: 8.3 }) {
   // 严格校验 station.location
   if (!isValidLocation(station.location)) return null;
 
-  const segments = plan.segments || [];
-
   // 公交费用：用 AMap plan.cost 按距离比例折算（lines[0].price 在 JS SDK 中不可靠）
   const transitCost = Math.max((plan.cost || 0) * station.ratio, 2);
-  const transitLegs = [];
-  for (let i = 0; i <= station.segmentIndex; i++) {
-    const s = segments[i];
-    if (s.transit_mode === 'SUBWAY' || s.transit_mode === 'BUS') {
-      const lines = (s.transit && s.transit.lines) || [];
-      const onStation = (s.transit && s.transit.on_station && s.transit.on_station.name) || '';
-      const offStation = (s.transit && s.transit.off_station && s.transit.off_station.name) || '';
-      transitLegs.push({
-        mode: s.transit_mode,
-        lineName: (lines[0] && lines[0].name) || (s.transit_mode === 'SUBWAY' ? '地铁' : '公交'),
-        price: 0, // 不再逐段显示价格，总价由 transitCost 体现
-        fromStation: onStation,
-        // 途经站接驳时，不能把该段错误展示为坐到线路终点。
-        toStation: i === station.segmentIndex && station.segmentFraction < 1 ? station.name : offStation,
-      });
-    }
-  }
+  const prefixSegments = createTransitPrefixSegments(plan, station);
 
   // 独立查询实时驾车时间（含路况），不用全程打车的统一 speedMps
   const driving = await getDrivingTime(
@@ -1019,7 +1046,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     time: totalTime,
     distance: (station.prefixDistance ?? (plan.distance || 0) * station.ratio) + taxiDistance,
     segments: [
-      ...transitLegs.map(l => ({ ...l, type: 'transit' })),
+      ...prefixSegments,
       { type: 'taxi', distance: taxiDistance, time: withTaxiPickup(driving.time), lineName: `打车${carTypeSuffix}到 ${endPOI ? endPOI.name : '目的地'}`,
         fromStation: station.name, toStation: endPOI ? endPOI.name : '目的地' },
     ],

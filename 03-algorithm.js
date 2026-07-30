@@ -79,9 +79,9 @@ function renderComfortStars(route) {
 
 function assignParetoRanks(routes) {
   const metrics = routes.map(route => ({
-    cost: getDisplayCost(route),
-    time: Number(route.time) || 0,
-    comfort: getComfortCost(route),
+    cost: toRouteMetric(getDisplayCost(route)),
+    time: toRouteMetric(route.time, { positive: true }),
+    comfort: toRouteMetric(getComfortCost(route)),
   }));
   const remaining = new Set(routes.map((_, index) => index));
   let rank = 0;
@@ -102,74 +102,128 @@ function assignParetoRanks(routes) {
   }
 }
 
-// 三目标排序：经济、时间、舒适度都参与，每个偏好只改变权重。
+function toRouteMetric(value, { positive = false } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || (positive && number <= 0)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return number;
+}
+
+// 将“比当前最优多出来的损失”映射到 0~1。
+// 与 min-max 不同，这个分数不会因为多出一条极端候选路线而整体漂移。
+function normalizeRouteRegret(value, best, scale) {
+  if (!Number.isFinite(value) || value === Number.MAX_SAFE_INTEGER) return 1;
+  const regret = Math.max(0, value - best);
+  return 1 - Math.exp(-regret / Math.max(1, scale));
+}
+
+function getRouteReliabilityPenalty(route) {
+  if (countTaxiSegments(route) === 0) return 0;
+
+  let penalty = route.dataSource && route.dataSource !== 'didi' ? 0.035 : 0;
+  const answerRate = Number(route.answerRate);
+  if (Number.isFinite(answerRate) && answerRate < 80) {
+    penalty += Math.min(0.12, (80 - answerRate) / 250);
+  }
+  return penalty;
+}
+
+const ROUTE_MODE_WEIGHTS = {
+  cheapest: { cost: 0.68, time: 0.18, comfort: 0.14 },
+  fastest: { cost: 0.16, time: 0.69, comfort: 0.15 },
+  comfortable: { cost: 0.17, time: 0.18, comfort: 0.65 },
+  balanced: { cost: 0.36, time: 0.34, comfort: 0.3 },
+};
+
+// 三目标排序：按相对最优方案的“后悔值”计算，Pareto 层级和叫车可靠性用于校正。
 function sortRoutes(routes, mode = 'balanced') {
   if (!routes || routes.length <= 1) return;
 
   assignParetoRanks(routes);
 
-  const costs = routes.map(r => getDisplayCost(r));
-  const times = routes.map(r => r.time || 0);
-  const comforts = routes.map(r => getComfortCost(r));
+  const costs = routes.map(r => toRouteMetric(getDisplayCost(r)));
+  const times = routes.map(r => toRouteMetric(r.time, { positive: true }));
+  const comforts = routes.map(r => toRouteMetric(getComfortCost(r)));
   const minCost = Math.min(...costs);
-  const maxCost = Math.max(...costs);
   const minTime = Math.min(...times);
-  const maxTime = Math.max(...times);
   const minComfort = Math.min(...comforts);
-  const maxComfort = Math.max(...comforts);
-  const costRange = maxCost - minCost || 1;
-  const timeRange = maxTime - minTime || 1;
-  const comfortRange = maxComfort - minComfort || 1;
+  const weights = ROUTE_MODE_WEIGHTS[mode] || ROUTE_MODE_WEIGHTS.balanced;
 
-  // 算分
-  const scores = routes.map((r, i) => {
-    const costNorm = (costs[i] - minCost) / costRange;
-    const timeNorm = (times[i] - minTime) / timeRange;
-    const comfortNorm = (comforts[i] - minComfort) / comfortRange;
-    const paretoPenalty = Math.min(r.paretoRank || 0, 3) * 0.08;
+  const indexed = routes.map((route, index) => {
+    const costRegret = normalizeRouteRegret(costs[index], minCost, Math.max(12, minCost * 0.55));
+    const timeRegret = normalizeRouteRegret(times[index], minTime, Math.max(18, minTime * 0.5));
+    const comfortRegret = normalizeRouteRegret(comforts[index], minComfort, Math.max(12, minComfort * 0.5));
+    const paretoPenalty = Math.min(route.paretoRank || 0, 3) * 0.09;
+    const reliabilityPenalty = getRouteReliabilityPenalty(route);
+    const score =
+      costRegret * weights.cost +
+      timeRegret * weights.time +
+      comfortRegret * weights.comfort +
+      paretoPenalty +
+      reliabilityPenalty;
 
-    switch (mode) {
-      case 'cheapest':    return costNorm * 0.72 + timeNorm * 0.13 + comfortNorm * 0.15 + paretoPenalty;
-      case 'fastest':     return costNorm * 0.13 + timeNorm * 0.72 + comfortNorm * 0.15 + paretoPenalty;
-      case 'comfortable': return costNorm * 0.15 + timeNorm * 0.15 + comfortNorm * 0.7 + paretoPenalty;
-      case 'balanced':
-      default:            return (costNorm + timeNorm + comfortNorm) / 3 + paretoPenalty;
-    }
+    route.routeScore = Math.round(score * 10000) / 10000;
+    route.scoreBreakdown = {
+      cost: Math.round(costRegret * 1000) / 1000,
+      time: Math.round(timeRegret * 1000) / 1000,
+      comfort: Math.round(comfortRegret * 1000) / 1000,
+      reliability: Math.round(reliabilityPenalty * 1000) / 1000,
+    };
+    return { route, score, originalIndex: index };
   });
 
-  // 原地排序（保持引用关系）
-  const indexed = routes.map((r, i) => ({ r, s: scores[i] }));
-  indexed.sort((a, b) => a.s - b.s);
+  // 明确的逐级决胜规则让相同分数在刷新、人数变化后仍保持稳定。
+  indexed.sort((a, b) =>
+    a.score - b.score ||
+    (a.route.paretoRank || 0) - (b.route.paretoRank || 0) ||
+    times[a.originalIndex] - times[b.originalIndex] ||
+    costs[a.originalIndex] - costs[b.originalIndex] ||
+    String(a.route.id || '').localeCompare(String(b.route.id || ''), 'zh-CN')
+  );
   routes.length = 0;
-  routes.push(...indexed.map(x => x.r));
+  routes.push(...indexed.map(item => item.route));
 }
 
-// 在保持当前排序结果的前提下，给混合方案保留展示席位。
-// 否则它们即使已生成，也容易被步行、骑行和相近的纯公交方案挤出前 14 条。
+function isCompetitiveDisplayRoute(route, bestScore) {
+  const score = Number(route?.routeScore);
+  if (!Number.isFinite(score) || !Number.isFinite(bestScore)) return true;
+  // 允许不同取舍的方案进入列表，但不为明显劣于首选的方案强行补位。
+  return score <= bestScore + 0.62 && (route.paretoRank || 0) <= 2;
+}
+
+// 在保持全局排名的前提下，为“有竞争力”的混合方案保留展示席位。
 function selectRoutesForDisplay(routes, limit = 14) {
-  const selected = routes.slice(0, limit);
-  const hybridRoutes = routes.filter(route => route.category === 'hybrid');
+  if (!Array.isArray(routes) || limit <= 0) return [];
+  const rankedRoutes = routes.slice();
+  const rankByRoute = new Map(rankedRoutes.map((route, index) => [route, index]));
+  const selected = rankedRoutes.slice(0, limit);
+  const bestScore = Number(rankedRoutes[0]?.routeScore);
+  const hybridRoutes = rankedRoutes.filter(route =>
+    route.category === 'hybrid' && isCompetitiveDisplayRoute(route, bestScore)
+  );
   // 产品核心是混合方案，最多展示 10 条，同时始终至少为非混合方案保留两个席位。
   const targetHybridCount = Math.min(10, hybridRoutes.length, Math.max(0, limit - 2));
   let currentHybridCount = selected.filter(route => route.category === 'hybrid').length;
   if (currentHybridCount >= targetHybridCount) return selected;
 
-  const selectedIds = new Set(selected.map(route => route.id));
+  const selectedRoutes = new Set(selected);
   for (const hybrid of hybridRoutes) {
     if (currentHybridCount >= targetHybridCount) break;
-    if (selectedIds.has(hybrid.id)) continue;
+    if (selectedRoutes.has(hybrid)) continue;
 
     // 保留第一名，优先替换排名靠后的非混合方案。
     const replaceIndex = selected.map((route, index) => ({ route, index }))
       .reverse()
       .find(({ route, index }) => index > 0 && route.category !== 'hybrid')?.index;
     if (replaceIndex == null) break;
-    selectedIds.delete(selected[replaceIndex].id);
+    selectedRoutes.delete(selected[replaceIndex]);
     selected[replaceIndex] = hybrid;
-    selectedIds.add(hybrid.id);
+    selectedRoutes.add(hybrid);
     currentHybridCount++;
   }
-  return selected;
+  // 补位后仍严格按全局排名展示，避免较差方案出现在较优方案之前。
+  return selected.sort((a, b) => rankByRoute.get(a) - rankByRoute.get(b));
 }
 
 

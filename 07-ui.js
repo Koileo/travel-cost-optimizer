@@ -165,6 +165,10 @@ function restoreSearchState() {
     allRoutes = saved.allRoutes;
     sortMode = saved.sortMode || 'balanced';
     passengerCount = saved.passengerCount || 1;
+    // 缓存可能来自旧版评分模型，恢复时按当前规则重新计算，避免沿用过期顺序。
+    sortRoutes(allRoutes, sortMode);
+    allRoutes.forEach(route => { route.badge = null; });
+    if (allRoutes[0]) allRoutes[0].badge = 'best';
     // 更新 UI 控件状态
     if (passengerCountEl) passengerCountEl.textContent = passengerCount;
     document.querySelectorAll('.mode-option').forEach(b => {

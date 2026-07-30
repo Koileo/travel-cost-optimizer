@@ -9,8 +9,14 @@ const context = {
   isValidLocation: location => Number.isFinite(location?.lng) && Number.isFinite(location?.lat),
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations };`, context);
-const { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations } = context.routePlanning;
+vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments };`, context);
+const {
+  withTaxiPickup,
+  selectHybridStationCandidates,
+  dedupeHybridRoutes,
+  collectTransferStations,
+  createTransitPrefixSegments,
+} = context.routePlanning;
 
 test('接驳打车时间包含接驾缓冲', () => {
   assert.equal(withTaxiPickup(12 * 60), 17 * 60);
@@ -63,4 +69,33 @@ test('相同接驳链路只保留成本更低的混合方案', () => {
   });
   const unique = dedupeHybridRoutes([route('slow', 18, 35), route('best', 16, 42)]);
   assert.equal(unique.map(item => item.id).join(','), 'best');
+});
+
+test('公交转打车保留前置步行，并按途经站比例截断公交段', () => {
+  const plan = {
+    segments: [
+      { transit_mode: 'WALK', distance: 600, time: 480 },
+      {
+        transit_mode: 'SUBWAY',
+        distance: 8_000,
+        time: 2_400,
+        transit: {
+          lines: [{ name: '1号线' }],
+          on_station: { name: '上车站' },
+          off_station: { name: '线路终点' },
+        },
+      },
+    ],
+  };
+  const segments = createTransitPrefixSegments(plan, {
+    name: '中途站',
+    segmentIndex: 1,
+    segmentFraction: 0.25,
+  });
+
+  assert.equal(segments[0].type, 'walk');
+  assert.equal(segments[0].distance, 600);
+  assert.equal(segments[1].distance, 2_000);
+  assert.equal(segments[1].time, 600);
+  assert.equal(segments[1].toStation, '中途站');
 });
