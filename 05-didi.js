@@ -539,10 +539,3 @@ async function estimateTaxi(distanceMeters, timeSeconds, fromLocation, toLocatio
   };
 }
 
-if (themeToggle) {
-  themeToggle.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme');
-    setTheme(current === 'dark' ? 'light' : 'dark');
-  });
-}
-

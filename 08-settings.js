@@ -1,5 +1,24 @@
 // 08-settings.js — split from app-client.js
 // 出行成本优化器
+const settingsModal = document.getElementById('settings-modal');
+const settingsBtn = document.getElementById('settings-btn');
+const cfgCity = document.getElementById('cfg-city');
+const cfgDidiEndpoint = document.getElementById('cfg-didi-endpoint');
+const cfgDidiRaw = document.getElementById('cfg-didi-raw');
+const cfgParseDidi = document.getElementById('cfg-parse-didi');
+const cfgDidiHeaders = document.getElementById('cfg-didi-headers');
+const cfgDidiBody = document.getElementById('cfg-didi-body');
+const cfgTestDidi = document.getElementById('cfg-test-didi');
+const cfgSaveBtn = document.getElementById('cfg-save');
+const cfgExport = document.getElementById('cfg-export');
+const cfgImportBtn = document.getElementById('cfg-import-btn');
+const cfgImportArea = document.getElementById('cfg-import-area');
+const cfgImportText = document.getElementById('cfg-import-text');
+const cfgImportConfirm = document.getElementById('cfg-import-confirm');
+const cfgImportCancel = document.getElementById('cfg-import-cancel');
+const didiStatus = document.getElementById('didi-status');
+const didiTestResult = document.getElementById('didi-test-result');
+
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -179,4 +198,3 @@ function closeSettings() {
   settingsModal.hidden = true;
   settingsModal.style.display = 'none';
 }
-

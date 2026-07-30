@@ -1,7 +1,7 @@
 // Service Worker — network-first 策略 + 版本更新检测
 // ===========================================================================
 // 版本号：修改任何静态资源后请递增，确保旧缓存被清理
-const CACHE_VERSION = 10;
+const CACHE_VERSION = 11;
 const CACHE_NAME = `travel-optimizer-v${CACHE_VERSION}`;
 
 // 静态资源：安装时预缓存（离线兜底）
@@ -9,7 +9,16 @@ const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
-  '/app-client.js',
+  '/01-state.js',
+  '/02-utils.js',
+  '/03-algorithm.js',
+  '/04-map.js',
+  '/05-didi.js',
+  '/06-route.js',
+  '/07-ui.js',
+  '/08-settings.js',
+  '/09-sw.js',
+  '/app-client-entry.js',
   '/manifest.json',
 ];
 

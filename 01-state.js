@@ -57,15 +57,3 @@ const COMFORT_WEIGHTS = {
 let _currentWeather = null;
 
 let sortMode = "balanced";
-
-// Didi estimate cache
-const _didiEstimateCache = new Map();
-const _didiEstimateInFlight = new Map();
-const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
-
-// 叫车难度阈值
-const TAXI_DIFFICULTY = { lowAnswerRate: 60 };
-
-// 打车最小距离参考值
-const TAXI_MIN_FULL_M = 1000;
-const TAXI_MIN_LEG_M = 800;

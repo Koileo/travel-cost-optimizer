@@ -812,3 +812,9 @@ modal.addEventListener('click', (e) => {
 
 // 主题切换
 const themeToggle = document.getElementById('theme-toggle');
+if (themeToggle) {
+  themeToggle.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme');
+    setTheme(current === 'dark' ? 'light' : 'dark');
+  });
+}

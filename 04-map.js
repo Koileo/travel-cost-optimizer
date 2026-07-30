@@ -760,8 +760,3 @@ const DEFAULT_SETTINGS = {
   didiHeaders: {},
   didiBody: {},
 };
-
-const MCP_TAXI_CACHE_TTL_MS = 15 * 60 * 1000;
-const MCP_COOLDOWN_MS = 5 * 60 * 1000;
-const MCP_TAXI_CACHE_STORAGE_KEY = 'travel-optimizer-mcp-taxi-cache-v1';
-const MCP_COOLDOWN_STORAGE_KEY = 'travel-optimizer-mcp-cooldown-until';
