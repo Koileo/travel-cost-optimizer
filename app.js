@@ -14,6 +14,21 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
+const PUBLIC_STATIC_FILES = new Set([
+  'index.html', 'styles.css', 'sw.js', 'manifest.json',
+  '01-state.js', '02-utils.js', '03-algorithm.js', '04-map.js',
+  '05-didi.js', '06-route.js', '07-ui.js', '08-settings.js', '09-sw.js',
+  'app-client-entry.js',
+]);
+
+function publicFileFromUrl(url) {
+  const pathname = String(url || '/').split('?')[0];
+  if (pathname === '/') return 'index.html';
+  let file;
+  try { file = decodeURIComponent(pathname.replace(/^\/+/, '')); } catch (_) { return null; }
+  return PUBLIC_STATIC_FILES.has(file) ? file : null;
+}
+
 // 预加载静态文件到内存（自动发现 .js/.css/.html 文件）
 const STATIC = {};
 function preloadDir(dir) {
@@ -21,7 +36,7 @@ function preloadDir(dir) {
     fs.readdirSync(dir).forEach(f => {
       const full = path.join(dir, f);
       const ext = path.extname(f);
-      if (['.js','.css','.html','.json','.svg','.webmanifest'].includes(ext) && !STATIC[f]) {
+      if (PUBLIC_STATIC_FILES.has(f) && !STATIC[f]) {
         try { STATIC[f] = fs.readFileSync(full, 'utf-8'); } catch (_) {}
       }
     });
@@ -31,9 +46,13 @@ preloadDir(__dirname);
 preloadDir(process.cwd());
 
 function serveStatic(url, res) {
-  const file = url === '/' ? 'index.html' : url.replace(/^\//, '').split('?')[0];
+  const file = publicFileFromUrl(url);
+  if (!file) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('404 Not Found');
+  }
   let content = STATIC[file];
-  // 缓存未命中时尝试从磁盘读取（新文件或动态路径）
+  // 缓存未命中时从部署目录读取白名单内的资源。
   if (!content) {
     try { content = fs.readFileSync(path.join(__dirname, file), 'utf-8'); }
     catch (_) { try { content = fs.readFileSync(path.join(process.cwd(), file), 'utf-8'); } catch (_) {} }

@@ -52,14 +52,26 @@ if (typeof swapBtn !== 'undefined' && swapBtn) {
 if (typeof searchBtn !== 'undefined' && searchBtn) searchBtn.addEventListener('click', searchRoutes);
 
 // 人数变更
-const passengerInput = document.getElementById('passenger-count');
-if (passengerInput) {
-  passengerInput.addEventListener('input', () => {
-    passengerCount = Math.max(1, Math.min(10, parseInt(passengerInput.value) || 1));
-    passengerInput.value = passengerCount;
-    if (_lastResults.length > 0) { renderResults(_lastResults); saveSearchState(); }
-  });
+const passengerMinus = document.getElementById('passenger-minus');
+const passengerPlus = document.getElementById('passenger-plus');
+const passengerCountEl = document.getElementById('passenger-count');
+
+function updatePassengerCount(nextCount) {
+  const clamped = Math.max(1, Math.min(10, nextCount));
+  if (clamped === passengerCount) return;
+  passengerCount = clamped;
+  if (passengerCountEl) passengerCountEl.textContent = passengerCount;
+  if (allRoutes.length > 0) {
+    sortRoutes(allRoutes, sortMode);
+    allRoutes.forEach(route => { route.badge = null; });
+    if (allRoutes[0]) allRoutes[0].badge = 'best';
+    renderResults(selectRoutesForDisplay(allRoutes));
+    saveSearchState();
+  }
 }
+
+if (passengerMinus) passengerMinus.addEventListener('click', () => updatePassengerCount(passengerCount - 1));
+if (passengerPlus) passengerPlus.addEventListener('click', () => updatePassengerCount(passengerCount + 1));
 
 // 结果卡片点击
 if (typeof resultsList !== 'undefined' && resultsList) {
@@ -73,7 +85,14 @@ if (typeof resultsList !== 'undefined' && resultsList) {
 
 // 详情弹窗关闭
 if (typeof closeModal !== 'undefined' && closeModal) closeModal.addEventListener('click', closeRouteDetail);
-if (typeof modal !== 'undefined' && modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeRouteDetail(); });
+if (typeof modal !== 'undefined' && modal) modal.addEventListener('click', (e) => {
+  if (e.target === modal || e.target.classList.contains('modal-backdrop')) closeRouteDetail();
+});
+
+const themeToggle = document.getElementById('theme-toggle');
+if (themeToggle) themeToggle.addEventListener('click', () => {
+  setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+});
 
 // 设置面板 (from 08-settings.js)
 if (typeof settingsBtn !== 'undefined' && settingsBtn) settingsBtn.addEventListener('click', openSettings);

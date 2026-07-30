@@ -2,6 +2,7 @@
   "name": "travel-cost-optimizer",
   "private": true,
   "scripts": {
-    "dev": "node server.js"
+    "dev": "node dev-server.js",
+    "test": "node --test server.test.js"
   }
 }

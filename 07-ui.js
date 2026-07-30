@@ -741,94 +741,9 @@ function showRouteDetail(route) {
   refreshIcons();
 }
 
-// 事件绑定
-gpsBtn.addEventListener('click', async () => {
-  try {
-    const location = await getCurrentLocation();
-    const address = await reverseGeocode(location);
-    startInput.value = address;
-    startPOI = {
-      location: location,
-      name: '我的位置',
-      address: address
-    };
-    map.setCenter(location);
-    updateMapMarkers();
-  } catch (error) {
-    alert('获取位置失败: ' + error.message);
-  }
-});
-
-swapBtn.addEventListener('click', () => {
-  const temp = startInput.value;
-  startInput.value = endInput.value;
-  endInput.value = temp;
-
-  const tempPOI = startPOI;
-  startPOI = endPOI;
-  endPOI = tempPOI;
-
-  updateMapMarkers();
-});
-
-searchBtn.addEventListener('click', searchRoutes);
-
-// 人数选择
-const passengerMinus = document.getElementById('passenger-minus');
-const passengerPlus = document.getElementById('passenger-plus');
-const passengerCountEl = document.getElementById('passenger-count');
-
-passengerMinus.addEventListener('click', () => {
-  if (passengerCount > 1) {
-    passengerCount--;
-    passengerCountEl.textContent = passengerCount;
-    if (allRoutes.length > 0) {
-      sortRoutes(allRoutes, sortMode);
-      allRoutes.forEach(route => { route.badge = null; });
-      if (allRoutes[0]) allRoutes[0].badge = 'best';
-      renderResults(selectRoutesForDisplay(allRoutes));
-      saveSearchState();
-    }
-  }
-});
-
-passengerPlus.addEventListener('click', () => {
-  if (passengerCount < 10) {
-    passengerCount++;
-    passengerCountEl.textContent = passengerCount;
-    if (allRoutes.length > 0) {
-      sortRoutes(allRoutes, sortMode);
-      allRoutes.forEach(route => { route.badge = null; });
-      if (allRoutes[0]) allRoutes[0].badge = 'best';
-      renderResults(selectRoutesForDisplay(allRoutes));
-      saveSearchState();
-    }
-  }
-});
-
 function closeRouteDetail() {
   modal.hidden = true;
   modal.style.display = 'none';
   clearRouteOverlays();
   restoreMapToPage();
-}
-
-closeModal.addEventListener('click', (e) => {
-  e.stopPropagation();
-  closeRouteDetail();
-});
-
-modal.addEventListener('click', (e) => {
-  if (e.target === modal || e.target.classList.contains('modal-backdrop')) {
-    closeRouteDetail();
-  }
-});
-
-// 主题切换
-const themeToggle = document.getElementById('theme-toggle');
-if (themeToggle) {
-  themeToggle.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme');
-    setTheme(current === 'dark' ? 'light' : 'dark');
-  });
 }

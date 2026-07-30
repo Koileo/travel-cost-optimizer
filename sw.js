@@ -1,7 +1,7 @@
 // Service Worker — network-first 策略 + 版本更新检测
 // ===========================================================================
 // 版本号：修改任何静态资源后请递增，确保旧缓存被清理
-const CACHE_VERSION = 12;
+const CACHE_VERSION = 13;
 const CACHE_NAME = `travel-optimizer-v${CACHE_VERSION}`;
 
 // 静态资源：安装时预缓存（离线兜底）

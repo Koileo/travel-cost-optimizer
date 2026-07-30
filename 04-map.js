@@ -716,29 +716,6 @@ function setTheme(theme) {
   setTimeout(() => { try { map && map.getMapStyle && refreshMapStyle(); } catch (e) {} }, 0);
 }
 
-// 排序模式切换
-document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.mode-option');
-  if (!btn) return;
-  const mode = btn.dataset.mode;
-  if (!mode || mode === sortMode) return;
-
-  sortMode = mode;
-  document.querySelectorAll('.mode-option').forEach(b => {
-    const active = b.dataset.mode === sortMode;
-    b.classList.toggle('is-active', active);
-    b.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-
-  if (allRoutes.length > 0) {
-    sortRoutes(allRoutes, sortMode);
-    allRoutes.forEach(route => { route.badge = null; });
-    if (allRoutes[0]) allRoutes[0].badge = 'best';
-    renderResults(selectRoutesForDisplay(allRoutes));
-    saveSearchState();
-  }
-});
-
 function refreshMapStyle() {
   if (!map) return;
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
