@@ -149,7 +149,8 @@ function sortRoutes(routes, mode = 'balanced') {
 function selectRoutesForDisplay(routes, limit = 14) {
   const selected = routes.slice(0, limit);
   const hybridRoutes = routes.filter(route => route.category === 'hybrid');
-  const targetHybridCount = Math.min(6, hybridRoutes.length, Math.max(0, limit - 1));
+  // 产品核心是混合方案，最多展示 10 条，同时始终至少为非混合方案保留两个席位。
+  const targetHybridCount = Math.min(10, hybridRoutes.length, Math.max(0, limit - 2));
   let currentHybridCount = selected.filter(route => route.category === 'hybrid').length;
   if (currentHybridCount >= targetHybridCount) return selected;
 

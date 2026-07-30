@@ -333,9 +333,9 @@ function withTaxiPickup(seconds, taxiSegments = 1) {
 }
 
 // 高德会给出许多途经站。先挑出具有代表性的站点，避免一次查询发起几十个实时估价。
-function selectHybridStationCandidates(candidates, limit = 8) {
+function selectHybridStationCandidates(candidates, limit = 12) {
   return candidates
-    .filter(({ station }) => station.ratio >= 0.25 && station.ratio <= 0.9)
+    .filter(({ station }) => station.ratio >= 0.12 && station.ratio <= 0.94)
     .sort((a, b) => {
       const score = candidate =>
         Math.abs(candidate.station.ratio - 0.65) -
@@ -571,7 +571,7 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
     .filter(Boolean)
     .filter(h => isFinite(h.cost) && h.cost <= getHybridCostCeiling(fullTaxiCost))
     .sort((a, b) => a.cost - b.cost)
-    .slice(0, 8);
+    .slice(0, 12);
 
   console.log(`[hybrid] candidates=${candidates.length}, selected=${selectedCandidates.length}, taxiThreshold=${fullTaxiCost.toFixed(2)}, kept=${hybrids.length}`);
 
@@ -900,35 +900,48 @@ function collectTransferStations(plan) {
   const stations = [];
 
   let acc = 0;
+  let elapsedTime = 0;
   segments.forEach((seg, idx) => {
     const segStart = acc;
+    const segStartTime = elapsedTime;
     const segEnd = acc + (seg.distance || 0);
     acc = segEnd;
+    elapsedTime += seg.time || 0;
 
     if (seg.transit_mode !== 'SUBWAY' && seg.transit_mode !== 'BUS') return;
-    if (!seg.transit || !seg.transit.off_station) return;
+    if (!seg.transit || (seg.distance || 0) < 100) return;
 
-    const offStation = seg.transit.off_station;
-    // 严格校验：必须有有效 location 和 name
-    if (!isValidLocation(offStation.location) || !offStation.name) return;
+    const lineName = (seg.transit.lines && seg.transit.lines[0] && seg.transit.lines[0].name) ||
+      (seg.transit_mode === 'SUBWAY' ? '地铁' : '公交');
+    const seenInSegment = new Set();
+    const addStation = (stop, fraction, source) => {
+      if (!stop?.name || !isValidLocation(stop.location)) return;
+      const normalizedFraction = Math.max(0, Math.min(1, fraction));
+      const ratio = (segStart + (seg.distance || 0) * normalizedFraction) / totalDistance;
+      if (!isFinite(ratio) || ratio <= 0.04 || ratio >= 0.97) return;
+      const key = `${stop.name}|${Math.round(normalizedFraction * 1000)}`;
+      if (seenInSegment.has(key)) return;
+      seenInSegment.add(key);
+      stations.push({
+        name: stop.name,
+        location: stop.location,
+        segmentIndex: idx,
+        segmentFraction: normalizedFraction,
+        prefixDistance: segStart + (seg.distance || 0) * normalizedFraction,
+        prefixTime: segStartTime + (seg.time || 0) * normalizedFraction,
+        ratio,
+        lineName,
+        transitMode: seg.transit_mode,
+        segmentDistance: seg.distance || 0,
+        source,
+      });
+    };
 
-    // 跳过"下车站几乎就是终点"的情况（ratio > 0.97）
-    const ratio = segEnd / totalDistance;
-    if (!isFinite(ratio) || ratio > 0.97) return;
-
-    // 跳过 segment 太短的（< 100m），这种 off_station 没什么意义
-    if ((seg.distance || 0) < 100) return;
-
-    stations.push({
-      name: offStation.name,
-      location: offStation.location,
-      segmentIndex: idx,
-      ratio,
-      lineName: (seg.transit.lines && seg.transit.lines[0] && seg.transit.lines[0].name) || (seg.transit_mode === 'SUBWAY' ? '地铁' : '公交'),
-      transitMode: seg.transit_mode,
-      segmentDistance: seg.distance || 0,
-      segStartRatio: segStart / totalDistance,
-    });
+    // via_stops 是 SDK 返回的线路途经站；此前只使用 off_station，遗漏了大多数可接驳点。
+    const viaStops = Array.isArray(seg.transit.via_stops) ? seg.transit.via_stops :
+      (Array.isArray(seg.transit.viaStops) ? seg.transit.viaStops : []);
+    viaStops.forEach((stop, viaIndex) => addStation(stop, (viaIndex + 1) / (viaStops.length + 1), 'via'));
+    addStation(seg.transit.off_station, 1, 'off');
   });
 
   return stations;
@@ -956,7 +969,8 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
         lineName: (lines[0] && lines[0].name) || (s.transit_mode === 'SUBWAY' ? '地铁' : '公交'),
         price: 0, // 不再逐段显示价格，总价由 transitCost 体现
         fromStation: onStation,
-        toStation: offStation,
+        // 途经站接驳时，不能把该段错误展示为坐到线路终点。
+        toStation: i === station.segmentIndex && station.segmentFraction < 1 ? station.name : offStation,
       });
     }
   }
@@ -978,7 +992,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
   }
 
   // 时间：公交耗时按占比 + 打车耗时（实时路况）
-  const transitTime = Math.round((plan.time || 0) / 60 * station.ratio);
+  const transitTime = Math.round((station.prefixTime ?? (plan.time || 0) * station.ratio) / 60);
   const taxiTime = Math.round(withTaxiPickup(driving.time) / 60);
   const totalTime = transitTime + taxiTime;
   if (!isFinite(totalTime) || totalTime <= 0) return null;
@@ -1003,7 +1017,7 @@ async function buildHybridFromStation(plan, station, endLngLat, traffic = { spee
     type: 'hybrid',
     cost: Math.round(totalCost * 100) / 100,
     time: totalTime,
-    distance: (plan.distance || 0) * station.ratio + taxiDistance,
+    distance: (station.prefixDistance ?? (plan.distance || 0) * station.ratio) + taxiDistance,
     segments: [
       ...transitLegs.map(l => ({ ...l, type: 'transit' })),
       { type: 'taxi', distance: taxiDistance, time: withTaxiPickup(driving.time), lineName: `打车${carTypeSuffix}到 ${endPOI ? endPOI.name : '目的地'}`,
