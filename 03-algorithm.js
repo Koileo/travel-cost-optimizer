@@ -189,21 +189,39 @@ function isCompetitiveDisplayRoute(route, bestScore) {
   const score = Number(route?.routeScore);
   if (!Number.isFinite(score) || !Number.isFinite(bestScore)) return true;
   // 允许不同取舍的方案进入列表，但不为明显劣于首选的方案强行补位。
-  return score <= bestScore + 0.62 && (route.paretoRank || 0) <= 2;
+  return score <= bestScore + 0.78 && (route.paretoRank || 0) <= 4;
 }
 
 // 在保持全局排名的前提下，为“有竞争力”的混合方案保留展示席位。
-function selectRoutesForDisplay(routes, limit = 14) {
+function selectRoutesForDisplay(routes, limit = 18) {
   if (!Array.isArray(routes) || limit <= 0) return [];
   const rankedRoutes = routes.slice();
   const rankByRoute = new Map(rankedRoutes.map((route, index) => [route, index]));
   const selected = rankedRoutes.slice(0, limit);
   const bestScore = Number(rankedRoutes[0]?.routeScore);
-  const hybridRoutes = rankedRoutes.filter(route =>
+  const competitiveHybrids = rankedRoutes.filter(route =>
     route.category === 'hybrid' && isCompetitiveDisplayRoute(route, bestScore)
   );
-  // 产品核心是混合方案，最多展示 10 条，同时始终至少为非混合方案保留两个席位。
-  const targetHybridCount = Math.min(10, hybridRoutes.length, Math.max(0, limit - 2));
+  const patternOf = route => {
+    const modes = (route.segments || [])
+      .map(segment => getSegmentMode(segment))
+      .filter((mode, index, allModes) => index === 0 || mode !== allModes[index - 1])
+      .join('-');
+    return `${route.direction || 'hybrid'}:${modes}`;
+  };
+  const seenPatterns = new Set();
+  const diverseHybrids = competitiveHybrids.filter(route => {
+    const pattern = patternOf(route);
+    if (seenPatterns.has(pattern)) return false;
+    seenPatterns.add(pattern);
+    return true;
+  });
+  const hybridRoutes = [
+    ...diverseHybrids,
+    ...competitiveHybrids.filter(route => !diverseHybrids.includes(route)),
+  ];
+  // 产品核心是混合方案，最多展示 14 条，同时为基础出行方式保留至少三个席位。
+  const targetHybridCount = Math.min(14, hybridRoutes.length, Math.max(0, limit - 3));
   let currentHybridCount = selected.filter(route => route.category === 'hybrid').length;
   if (currentHybridCount >= targetHybridCount) return selected;
 

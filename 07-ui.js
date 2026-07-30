@@ -196,7 +196,7 @@ function renderResults(routes) {
 
   // 叫车可用性 / 难度警告
   const taxiWarningHtml = (() => {
-    if (!routes.some(r => r.category === 'taxi' || r.category === 'hybrid')) return '';
+    if (!routes.some(route => countTaxiSegments(route) > 0)) return '';
     const d = window._taxiDifficulty || {};
     if (!d.available) {
       // 滴滴未返回可用报价
