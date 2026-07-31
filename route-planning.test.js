@@ -10,7 +10,7 @@ const context = {
   calculateDistance: (from, to) => Math.hypot(to[0] - from[0], to[1] - from[1]) * 1000,
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination };`, context);
+vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory };`, context);
 const {
   withTaxiPickup,
   selectHybridStationCandidates,
@@ -20,6 +20,7 @@ const {
   mergeTransitPlanResults,
   selectTaxiToTransitCandidates,
   isMeaningfulEndpointCombination,
+  getTransitConnectionCategory,
 } = context.routePlanning;
 
 test('接驳打车时间包含接驾缓冲', () => {
@@ -157,7 +158,15 @@ test('打车接公交候选包含后续换乘站，而不只包含第一站', ()
   assert.ok(candidates.some(candidate => candidate.onStation.name === '地铁中途站'));
 });
 
-test('骑行接驳公交会被视为混合方案', () => {
+test('只有含打车段的接驳路线才会被归为混合方案', () => {
   assert.equal(isMeaningfulEndpointCombination({ type: 'ride' }, { type: 'walk' }), true);
   assert.equal(isMeaningfulEndpointCombination({ type: 'walk' }, { type: 'walk' }), false);
+  assert.equal(
+    getTransitConnectionCategory({ type: 'ride', taxiSegments: 0 }, { type: 'walk', taxiSegments: 0 }),
+    'transit-ride'
+  );
+  assert.equal(
+    getTransitConnectionCategory({ type: 'taxi', taxiSegments: 1 }, { type: 'walk', taxiSegments: 0 }),
+    'hybrid'
+  );
 });

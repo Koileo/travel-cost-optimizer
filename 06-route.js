@@ -22,7 +22,7 @@ async function searchRoutes() {
   beginDidiSearchBatch();
 
   try {
-    // 各基础路网只查询一次；混合方案复用公共交通主干。
+    // 各基础路网只查询一次；接驳方案复用公共交通主干。
     const [[taxiRoutes, transitResult, walkingRoutes, ridingRoutes], weatherData] = await Promise.all([
       Promise.all([
         searchFullTaxi(),
@@ -540,6 +540,12 @@ function isMeaningfulEndpointCombination(access, egress) {
   return access?.type !== 'walk' || egress?.type !== 'walk';
 }
 
+// “混合”在产品中专指含打车的方案；公交/地铁接驳骑行单独归为“公交 + 骑行”。
+function getTransitConnectionCategory(access, egress) {
+  const taxiSegments = (access?.taxiSegments || 0) + (egress?.taxiSegments || 0);
+  return taxiSegments > 0 ? 'hybrid' : 'transit-ride';
+}
+
 // 同一组接驳站与线路可能由多个高德 plan 重复返回；只保留成本/时间更优的一条。
 function dedupeHybridRoutes(routes) {
   const bestBySignature = new Map();
@@ -664,10 +670,11 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
 
     accessVariants.forEach(access => {
       egressVariants.forEach(egress => {
-        // walk+walk 就是高德原始公交方案；其余骑行/打车接驳都属于有意义的混合路线。
+        // walk+walk 就是高德原始公交方案；骑行接驳和打车接驳分别独立展示。
         if (!isMeaningfulEndpointCombination(access, egress)) return;
         const taxiSegments = access.taxiSegments + egress.taxiSegments;
         if (taxiSegments > 2) return;
+        const category = getTransitConnectionCategory(access, egress);
 
         const taxiCost = access.taxiCost + egress.taxiCost;
         const personalCost = transitCost + (access.cost - access.taxiCost) + (egress.cost - egress.taxiCost);
@@ -690,7 +697,7 @@ async function searchTransitCombinations(traffic = { speedMps: 8.3 }, result = n
 
         routes.push({
           id: `multimodal-${planIndex}-${access.type}-${egress.type}`,
-          category: 'hybrid', type: 'hybrid', direction: 'multimodal',
+          category, type: 'hybrid', direction: 'multimodal',
           cost: Math.round(totalCost * 100) / 100,
           time: Math.max(1, Math.round((access.time + middleTime + egress.time) / 60)),
           distance: access.distance + middleDistance + egress.distance,

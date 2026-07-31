@@ -8,6 +8,7 @@ const BADGE_META = {
 
 const CATEGORY_META = {
   transit: { label: '全程公交', icon: 'bus' },
+  'transit-ride': { label: '公交 + 骑行', icon: 'bike' },
   taxi: { label: '全程打车', icon: 'car-taxi-front' },
   hybrid: { label: '混合', icon: 'shuffle' },
   walk: { label: '全程步行', icon: 'footprints' },
