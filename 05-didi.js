@@ -452,8 +452,17 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
 }
 
 function coordinatePair(location) {
-  if (Array.isArray(location)) return location;
-  return location && [location.lng, location.lat];
+  if (Array.isArray(location) && location.length >= 2) {
+    const lng = Number(location[0]), lat = Number(location[1]);
+    return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+  }
+  if (location && typeof location.getLng === 'function' && typeof location.getLat === 'function') {
+    const lng = Number(location.getLng()), lat = Number(location.getLat());
+    return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
+  }
+  const lng = Number(location?.lng ?? location?.KL);
+  const lat = Number(location?.lat ?? location?.kT);
+  return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
 }
 
 async function estimateTaxi(distanceMeters, timeSeconds, fromLocation, toLocation, tripMeta = {}) {

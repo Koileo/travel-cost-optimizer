@@ -15,6 +15,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 test('兼容高德 LngLat、数组和字符串坐标', () => {
   assert.deepEqual(plain(mapCoordinatePair({ lng: 116.4, lat: 39.9 })), [116.4, 39.9]);
   assert.deepEqual(plain(mapCoordinatePair([116.4, 39.9])), [116.4, 39.9]);
+  assert.deepEqual(plain(mapCoordinatePair({ KL: 116.4, kT: 39.9 })), [116.4, 39.9]);
   assert.deepEqual(plain(normalizeMapPath('116.4,39.9;116.41,39.91')), [[116.4, 39.9], [116.41, 39.91]]);
 });
 

@@ -43,8 +43,10 @@ function mapCoordinatePair(point) {
     const lng = Number(point.getLng()), lat = Number(point.getLat());
     return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
   }
-  if (point && Number.isFinite(Number(point.lng)) && Number.isFinite(Number(point.lat))) {
-    return [Number(point.lng), Number(point.lat)];
+  const legacyLng = point?.lng ?? point?.KL;
+  const legacyLat = point?.lat ?? point?.kT;
+  if (point && Number.isFinite(Number(legacyLng)) && Number.isFinite(Number(legacyLat))) {
+    return [Number(legacyLng), Number(legacyLat)];
   }
   return null;
 }

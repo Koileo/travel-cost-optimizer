@@ -85,9 +85,8 @@ function formatTransitDescription(segments) {
 function saveSearchState() {
   try {
     if (allRoutes.length > 0 && startPOI && endPOI) {
-      // AMap LngLat 对象用 getter (lng/lat)，JSON.stringify 后变成 {}，
-      // 必须先转为 [lng, lat] 数组才能序列化
-      const toCoord = p => (p && typeof p.lng === 'number') ? [p.lng, p.lat] : p;
+      // 高德坐标实例和轨迹先转成普通坐标，避免缓存恢复后丢失坐标方法。
+      const toCoord = p => routeCoordinatePair(p) || p;
       const toLeg = leg => {
         if (!leg) return leg;
         return {
@@ -97,7 +96,13 @@ function saveSearchState() {
           path: Array.isArray(leg.path) ? leg.path.map(toCoord) : leg.path,
         };
       };
-      const toLocation = loc => (loc && typeof loc.lng === 'number') ? { lng: loc.lng, lat: loc.lat } : loc;
+      const toLocation = loc => {
+        const pair = routeCoordinatePair(loc);
+        return pair ? { lng: pair[0], lat: pair[1] } : loc;
+      };
+      const savedStartPOI = normalizeRoutePOI(startPOI);
+      const savedEndPOI = normalizeRoutePOI(endPOI);
+      if (!savedStartPOI || !savedEndPOI) return;
 
       const slimRoutes = allRoutes.map(r => {
         const { raw, ...rest } = r;
@@ -132,7 +137,12 @@ function saveSearchState() {
           if (raw.transitCost != null) slimRaw.transitCost = raw.transitCost;
           if (raw.trafficSpeedKmh != null) slimRaw.trafficSpeedKmh = raw.trafficSpeedKmh;
           if (raw.taxiDistance != null) slimRaw.taxiDistance = raw.taxiDistance;
-          if (raw.station) slimRaw.station = raw.station;
+          if (raw.station) {
+            slimRaw.station = {
+              ...raw.station,
+              location: toLocation(raw.station.location),
+            };
+          }
         }
         rest.raw = Object.keys(slimRaw).length ? slimRaw : undefined;
         if (Array.isArray(rest.segments)) {
@@ -141,8 +151,8 @@ function saveSearchState() {
         return rest;
       });
       localStorage.setItem(SAVED_SEARCH_KEY, JSON.stringify({
-        startPOI,
-        endPOI,
+        startPOI: savedStartPOI,
+        endPOI: savedEndPOI,
         allRoutes: slimRoutes,
         sortMode,
         passengerCount,
@@ -161,8 +171,12 @@ function restoreSearchState() {
     if (!saved || !saved.startPOI || !saved.endPOI || !Array.isArray(saved.allRoutes) || saved.allRoutes.length === 0) {
       return false;
     }
-    startPOI = saved.startPOI;
-    endPOI = saved.endPOI;
+    // 高德路线插件不接受 JSON 恢复出的普通对象，需重新构造成 LngLat。
+    const restoredStartPOI = normalizeRoutePOI(saved.startPOI, true);
+    const restoredEndPOI = normalizeRoutePOI(saved.endPOI, true);
+    if (!restoredStartPOI || !restoredEndPOI) return false;
+    startPOI = restoredStartPOI;
+    endPOI = restoredEndPOI;
     // 回填输入框显示上次选择的地点名
     if (startInput && startPOI) {
       startInput.value = startPOI.name || '';
@@ -358,8 +372,7 @@ function emojiToLucide(emoji) {
 
 // 校验一个 AMap LngLat 位置对象是否可用
 function isValidLocation(loc) {
-  return loc && typeof loc.lng === 'number' && typeof loc.lat === 'number' &&
-         !isNaN(loc.lng) && !isNaN(loc.lat);
+  return routeCoordinatePair(loc) !== null;
 }
 
 // 从一个值中安全提取数字（NaN/undefined → fallback）

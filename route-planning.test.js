@@ -8,19 +8,37 @@ const source = fs.readFileSync(path.join(__dirname, '06-route.js'), 'utf8');
 const context = {
   isValidLocation: location => Number.isFinite(location?.lng) && Number.isFinite(location?.lat),
   calculateDistance: (from, to) => Math.hypot(to[0] - from[0], to[1] - from[1]) * 1000,
+  AMap: {
+    LngLat: class LngLat {
+      constructor(lng, lat) { this.lng = lng; this.lat = lat; }
+      getLng() { return this.lng; }
+      getLat() { return this.lat; }
+    },
+    plugin: () => { throw new Error('driving unavailable'); },
+  },
+  console: { info() {}, log() {}, warn() {}, error() {} },
+  setTimeout,
+  clearTimeout,
+  __ROUTE_DRIVING_TIMEOUT_MS: 5,
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory };`, context);
+vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI };`, context);
 const {
   withTaxiPickup,
   selectHybridStationCandidates,
   dedupeHybridRoutes,
   collectTransferStations,
   createTransitPrefixSegments,
+  createTransitPrefixRawSegments,
   mergeTransitPlanResults,
   selectTaxiToTransitCandidates,
   isMeaningfulEndpointCombination,
   getTransitConnectionCategory,
+  settleRouteCreations,
+  createRouteId,
+  getDrivingTime,
+  routeCoordinatePair,
+  normalizeRoutePOI,
 } = context.routePlanning;
 
 test('接驳打车时间包含接驾缓冲', () => {
@@ -169,4 +187,84 @@ test('只有含打车段的接驳路线才会被归为混合方案', () => {
     getTransitConnectionCategory({ type: 'taxi', taxiSegments: 1 }, { type: 'walk', taxiSegments: 0 }),
     'hybrid'
   );
+});
+
+test('单个路线来源失败时保留其他已创建结果', async () => {
+  const results = await settleRouteCreations([
+    Promise.resolve(['公交']),
+    Promise.reject(new Error('混合候选失败')),
+    Promise.resolve(['打车']),
+  ], '测试路线');
+
+  assert.equal(results[0][0], '公交');
+  assert.equal(results[1], null);
+  assert.equal(results[2][0], '打车');
+});
+
+test('混合路线 ID 会编码站名并区分不同公交骨架', () => {
+  const first = createRouteId('hybrid', 0, 2, '换乘"站');
+  const second = createRouteId('hybrid', 1, 2, '换乘"站');
+
+  assert.notEqual(first, second);
+  assert.ok(!first.includes('"'));
+});
+
+test('途经站转打车时原始公交段和轨迹会截断到换乘站', () => {
+  const plan = {
+    segments: [{
+      transit_mode: 'SUBWAY',
+      distance: 4_000,
+      time: 1_200,
+      transit: {
+        path: [[0, 0], [1, 0], [2, 0], [3, 0]],
+        on_station: { name: '起始站', location: { lng: 0, lat: 0 } },
+        off_station: { name: '线路终点', location: { lng: 3, lat: 0 } },
+        via_stops: [
+          { name: '换乘站', location: { lng: 1, lat: 0 } },
+          { name: '后续站', location: { lng: 2, lat: 0 } },
+        ],
+      },
+    }],
+  };
+  const rawSegments = createTransitPrefixRawSegments(plan, {
+    name: '换乘站',
+    location: { lng: 1, lat: 0 },
+    segmentIndex: 0,
+    segmentFraction: 1 / 3,
+    source: 'via',
+    viaIndex: 0,
+  });
+  const segment = JSON.parse(JSON.stringify(rawSegments[0]));
+
+  assert.equal(segment.distance, 4_000 / 3);
+  assert.equal(segment.time, 400);
+  assert.equal(segment.transit.off_station.name, '换乘站');
+  assert.equal(segment.transit.via_stops.length, 0);
+  assert.deepEqual(segment.transit.path.at(-1), [1, 0]);
+});
+
+test('驾车 SDK 初始化失败时混合方案使用可完成的直线估算', async () => {
+  const result = await getDrivingTime([0, 0], [3, 4], 10);
+
+  assert.equal(result.distance, 5_000);
+  assert.equal(result.time, 500);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.path)), [[0, 0], [3, 4]]);
+});
+
+test('缓存恢复会把数组和旧版高德内部坐标统一为普通位置对象', () => {
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalizeRoutePOI({ name: '数组地点', location: [116.4, 39.9] }))),
+    { name: '数组地点', location: { lng: 116.4, lat: 39.9 } }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalizeRoutePOI({ name: '旧缓存', location: { KL: 121.4, kT: 31.2 } }))),
+    { name: '旧缓存', location: { lng: 121.4, lat: 31.2 } }
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(routeCoordinatePair({
+    getLng: () => 113.2,
+    getLat: () => 23.1,
+  }))), [113.2, 23.1]);
+  const rehydrated = normalizeRoutePOI({ name: '恢复地点', location: [114.0, 22.5] }, true);
+  assert.equal(rehydrated.location.constructor.name, 'LngLat');
+  assert.deepEqual(JSON.parse(JSON.stringify(routeCoordinatePair(rehydrated.location))), [114, 22.5]);
 });
