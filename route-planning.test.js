@@ -20,9 +20,10 @@ const context = {
   setTimeout,
   clearTimeout,
   __ROUTE_DRIVING_TIMEOUT_MS: 5,
+  __ROUTE_TEST_RESULT_TTL_MS: 3 * 60 * 1000,
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI };`, context);
+vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI, isRouteResultFresh };`, context);
 const {
   withTaxiPickup,
   selectHybridStationCandidates,
@@ -39,6 +40,7 @@ const {
   getDrivingTime,
   routeCoordinatePair,
   normalizeRoutePOI,
+  isRouteResultFresh,
 } = context.routePlanning;
 
 test('接驳打车时间包含接驾缓冲', () => {
@@ -267,4 +269,12 @@ test('缓存恢复会把数组和旧版高德内部坐标统一为普通位置�
   const rehydrated = normalizeRoutePOI({ name: '恢复地点', location: [114.0, 22.5] }, true);
   assert.equal(rehydrated.location.constructor.name, 'LngLat');
   assert.deepEqual(JSON.parse(JSON.stringify(routeCoordinatePair(rehydrated.location))), [114, 22.5]);
+});
+
+test('路线价格和路况只在三分钟内视为新鲜', () => {
+  const now = 1_000_000;
+  assert.equal(isRouteResultFresh(now - 179_999, now), true);
+  assert.equal(isRouteResultFresh(now - 180_000, now), false);
+  assert.equal(isRouteResultFresh(now + 1, now), false);
+  assert.equal(isRouteResultFresh(0, now), false);
 });

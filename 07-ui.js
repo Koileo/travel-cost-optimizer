@@ -81,6 +81,72 @@ function formatTransitDescription(segments) {
   return steps.slice(0, 5).join(' → ') + (steps.length > 5 ? '...' : '');
 }
 
+function saveSearchInputsOnly() {
+  try {
+    const savedStartPOI = normalizeRoutePOI(startPOI);
+    const savedEndPOI = normalizeRoutePOI(endPOI);
+    if (!savedStartPOI || !savedEndPOI) return;
+    localStorage.setItem(SAVED_SEARCH_KEY, JSON.stringify({
+      startPOI: savedStartPOI,
+      endPOI: savedEndPOI,
+      allRoutes: [],
+      sortMode,
+      passengerCount,
+      routeFetchedAt: 0,
+      _savedAt: Date.now(),
+    }));
+  } catch (error) { /* quota exceeded, ignore */ }
+}
+
+function renderExpiredRouteState() {
+  const resultsHint = document.querySelector('.results-hint');
+  if (resultsHint) resultsHint.textContent = '等待重新查询';
+  resultsList.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon"><i data-lucide="refresh-cw"></i></div>
+      <p class="empty-title">路线数据已过期</p>
+      <p class="empty-hint">打车价格和拥堵情况可能已变化，请重新查询</p>
+      <button class="retry-btn" onclick="searchRoutes()">
+        <i data-lucide="search"></i>
+        <span>重新查询</span>
+      </button>
+    </div>
+  `;
+  refreshIcons();
+}
+
+function expireRouteResults() {
+  if (isRouteResultFresh(routeDataFetchedAt)) {
+    scheduleRouteExpiry(routeDataFetchedAt);
+    return;
+  }
+  clearTimeout(_routeExpiryTimer);
+  _routeExpiryTimer = null;
+  allRoutes = [];
+  _lastResults = [];
+  routeDataFetchedAt = 0;
+  if (modal && !modal.hidden) closeRouteDetail();
+  else {
+    clearRouteOverlays();
+    if (map) updateMapMarkers();
+  }
+  renderExpiredRouteState();
+  saveSearchInputsOnly();
+}
+
+function scheduleRouteExpiry(fetchedAt = routeDataFetchedAt) {
+  clearTimeout(_routeExpiryTimer);
+  _routeExpiryTimer = null;
+  const timestamp = Number(fetchedAt);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+  const remaining = timestamp + ROUTE_RESULT_TTL_MS - Date.now();
+  if (remaining <= 0) {
+    expireRouteResults();
+    return;
+  }
+  _routeExpiryTimer = setTimeout(expireRouteResults, remaining + 50);
+}
+
 
 function saveSearchState() {
   try {
@@ -103,6 +169,9 @@ function saveSearchState() {
       const savedStartPOI = normalizeRoutePOI(startPOI);
       const savedEndPOI = normalizeRoutePOI(endPOI);
       if (!savedStartPOI || !savedEndPOI) return;
+      if (!routeDataFetchedAt) routeDataFetchedAt = Date.now();
+      // 页面内过期不能依赖 localStorage 写入成功。
+      scheduleRouteExpiry(routeDataFetchedAt);
 
       const slimRoutes = allRoutes.map(r => {
         const { raw, ...rest } = r;
@@ -156,6 +225,7 @@ function saveSearchState() {
         allRoutes: slimRoutes,
         sortMode,
         passengerCount,
+        routeFetchedAt: routeDataFetchedAt,
         _savedAt: Date.now(),
       }));
     }
@@ -168,7 +238,7 @@ function restoreSearchState() {
     const raw = localStorage.getItem(SAVED_SEARCH_KEY);
     if (!raw) return false;
     const saved = JSON.parse(raw);
-    if (!saved || !saved.startPOI || !saved.endPOI || !Array.isArray(saved.allRoutes) || saved.allRoutes.length === 0) {
+    if (!saved || !saved.startPOI || !saved.endPOI) {
       return false;
     }
     // 高德路线插件不接受 JSON 恢复出的普通对象，需重新构造成 LngLat。
@@ -186,16 +256,8 @@ function restoreSearchState() {
       endInput.value = endPOI.name || '';
       endInput.closest('.input-wrapper')?.classList.add('selected');
     }
-    // 旧缓存也必须经过当前版本的可行性校验，避免恢复曾经保存的超长步行/骑行路线。
-    allRoutes = filterPracticalRoutes(saved.allRoutes);
-    if (allRoutes.length === 0) return false;
     sortMode = saved.sortMode || 'balanced';
     passengerCount = saved.passengerCount || 1;
-    // 缓存可能来自旧版评分模型，恢复时按当前规则重新计算，避免沿用过期顺序。
-    sortRoutes(allRoutes, sortMode);
-    allRoutes.forEach(route => { route.badge = null; });
-    if (allRoutes[0]) allRoutes[0].badge = 'best';
-    // 更新 UI 控件状态
     if (passengerCountEl) passengerCountEl.textContent = passengerCount;
     document.querySelectorAll('.mode-option').forEach(b => {
       const active = b.dataset.mode === sortMode;
@@ -203,7 +265,22 @@ function restoreSearchState() {
       b.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     if (map) updateMapMarkers();
+
+    if (!Array.isArray(saved.allRoutes) || saved.allRoutes.length === 0) return false;
+    routeDataFetchedAt = Number(saved.routeFetchedAt ?? saved._savedAt) || 0;
+    if (!isRouteResultFresh(routeDataFetchedAt)) {
+      expireRouteResults();
+      return false;
+    }
+    // 旧缓存也必须经过当前版本的可行性校验，避免恢复曾经保存的超长步行/骑行路线。
+    allRoutes = filterPracticalRoutes(saved.allRoutes);
+    if (allRoutes.length === 0) return false;
+    // 缓存可能来自旧版评分模型，恢复时按当前规则重新计算，避免沿用过期顺序。
+    sortRoutes(allRoutes, sortMode);
+    allRoutes.forEach(route => { route.badge = null; });
+    if (allRoutes[0]) allRoutes[0].badge = 'best';
     renderResults(selectRoutesForDisplay(allRoutes));
+    scheduleRouteExpiry(routeDataFetchedAt);
     return true;
   } catch (e) {
     return false;

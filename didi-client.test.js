@@ -21,7 +21,7 @@ function createClientContext(fetch) {
   };
   vm.createContext(context);
   vm.runInContext(
-    `${source}\nglobalThis.didiClient = { getDidiEstimate, beginDidiSearchBatch, resetDidiRequestState, recordDidiResponseStatus, reserveDidiRequestBudget };`,
+    `${source}\nglobalThis.didiClient = { getDidiEstimate, beginDidiSearchBatch, resetDidiRequestState, recordDidiResponseStatus, reserveDidiRequestBudget, cacheTtlMs: DIDI_ESTIMATE_CACHE_TTL_MS };`,
     context
   );
   return context.didiClient;
@@ -87,4 +87,9 @@ test('单次搜索最多预留八个实时滴滴报价', () => {
     () => client.reserveDidiRequestBudget(),
     error => error.code === 'DIDI_BUDGET_EXHAUSTED'
   );
+});
+
+test('滴滴实时价格只缓存三分钟', () => {
+  const client = createClientContext(async () => successfulResponse());
+  assert.equal(client.cacheTtlMs, 3 * 60 * 1000);
 });

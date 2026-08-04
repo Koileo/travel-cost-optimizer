@@ -6,7 +6,7 @@ async function searchRoutes() {
     return;
   }
 
-  // 滴滴报价有 15 分钟缓存；重复搜索不会重复请求相同行程。
+  // 滴滴报价短时缓存 3 分钟；在保证价格新鲜度的同时避免立即重复请求。
 
   searchBtn.disabled = true;
   searchBtn.querySelector('.btn-text').hidden = true;
@@ -18,6 +18,8 @@ async function searchRoutes() {
     </div>
   `;
   refreshIcons();
+  clearTimeout(_routeExpiryTimer);
+  _routeExpiryTimer = null;
   _drivingTimeCache.clear();
   _drivingFallbackWarningShown = false;
   beginDidiSearchBatch();
@@ -85,6 +87,7 @@ async function searchRoutes() {
       ...taxiRoutes,
       ...hybridRoutes,
     ]).filter(route => countTaxiSegments(route) <= 2);
+    routeDataFetchedAt = allRoutes.length > 0 ? Date.now() : 0;
 
     // 检测叫车可用性 + 区域难度：Didi 失败时标记所有含打车段的路由
     const taxiRouteOk = taxiRoutes[0] && taxiRoutes[0].dataSource === 'didi';
@@ -112,6 +115,10 @@ async function searchRoutes() {
     saveSearchState();
   } catch (error) {
     console.error('查询失败:', error);
+    allRoutes = [];
+    _lastResults = [];
+    routeDataFetchedAt = 0;
+    saveSearchInputsOnly();
     resultsList.innerHTML = `
       <div class="error-state">
         <div class="error-icon"><i data-lucide="alert-circle"></i></div>
@@ -128,6 +135,14 @@ async function searchRoutes() {
     searchBtn.querySelector('.btn-text').hidden = false;
     searchBtn.querySelector('.btn-loading').hidden = true;
   }
+}
+
+const ROUTE_RESULT_TTL_MS = globalThis.__ROUTE_TEST_RESULT_TTL_MS ?? 3 * 60 * 1000;
+
+function isRouteResultFresh(fetchedAt, now = Date.now()) {
+  const timestamp = Number(fetchedAt);
+  const age = now - timestamp;
+  return Number.isFinite(timestamp) && timestamp > 0 && age >= 0 && age < ROUTE_RESULT_TTL_MS;
 }
 
 // 检测打车路线中的拥堵路段。

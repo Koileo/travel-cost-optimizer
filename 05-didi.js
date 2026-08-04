@@ -18,7 +18,8 @@ const DIDI_CITY_ID_MAP = {
 
 const _didiEstimateCache = new Map();
 const _didiEstimateInFlight = new Map();
-const DIDI_ESTIMATE_CACHE_TTL_MS = 15 * 60 * 1000;
+// 实时报价变化较快，只在短时间内复用，避免旧价格跟随页面缓存停留过久。
+const DIDI_ESTIMATE_CACHE_TTL_MS = globalThis.__DIDI_TEST_CACHE_TTL_MS ?? 3 * 60 * 1000;
 const DIDI_MAX_CONCURRENT_REQUESTS = 1;
 const DIDI_MIN_REQUEST_INTERVAL_MS = globalThis.__DIDI_TEST_MIN_INTERVAL_MS ?? 700;
 const DIDI_SEARCH_REQUEST_BUDGET = globalThis.__DIDI_TEST_REQUEST_BUDGET ?? 8;

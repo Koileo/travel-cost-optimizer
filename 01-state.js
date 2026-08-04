@@ -43,6 +43,8 @@ let endPOI = null;
 let allRoutes = [];
 let passengerCount = 1;
 let _lastResults = []; // 缓存最近一次搜索结果，人数变化时重渲染
+let routeDataFetchedAt = 0; // 价格与路况实际获取时间；排序/人数变化不能刷新它
+let _routeExpiryTimer = null;
 const SAVED_SEARCH_KEY = 'travel-optimizer-last-search';
 
 const COMFORT_WEIGHTS = {
