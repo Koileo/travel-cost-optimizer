@@ -123,6 +123,87 @@ function filterPracticalRoutes(routes) {
   return (Array.isArray(routes) ? routes : []).filter(isPracticalRoute);
 }
 
+function normalizeRouteText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/(往|方向|开往)/g, '');
+}
+
+// 路线来源和 plan id 可能不同，但乘客实际执行的链路相同。用“方式 + 线路 + 上下车站”
+// 描述路线语义，连续步行段合并，避免把 SDK 的分段差异当成新方案。
+function getRouteSemanticSignature(route) {
+  const parts = [];
+  for (const segment of route?.segments || []) {
+    const mode = getSegmentMode(segment);
+    const line = normalizeRouteText(segment.lineName || segment.transit?.lines?.[0]?.name);
+    const from = normalizeRouteText(segment.fromStation || segment.transit?.on_station?.name);
+    const to = normalizeRouteText(segment.toStation || segment.transit?.off_station?.name);
+    const part = mode === 'transit' || mode === 'bus' || mode === 'subway'
+      ? `${mode}:${line}:${from}>${to}`
+      : `${mode}:${from}>${to}`;
+    // 高德有时会把一段步行拆成多个相邻小段；对用户而言仍是同一条链路。
+    if (parts.at(-1) !== part) parts.push(part);
+  }
+  return parts.length ? parts.join('|') : `${route?.category || route?.type || 'route'}`;
+}
+
+function isNearEquivalentRoute(a, b) {
+  if (getRouteSemanticSignature(a) !== getRouteSemanticSignature(b)) return false;
+  const costA = toRouteMetric(getDisplayCost(a));
+  const costB = toRouteMetric(getDisplayCost(b));
+  const timeA = toRouteMetric(a?.time, { positive: true });
+  const timeB = toRouteMetric(b?.time, { positive: true });
+  const costTolerance = Math.max(2, Math.min(costA, costB) * 0.12);
+  const timeTolerance = Math.max(5, Math.min(timeA, timeB) * 0.12);
+  return Math.abs(costA - costB) <= costTolerance && Math.abs(timeA - timeB) <= timeTolerance;
+}
+
+function addRouteValueInsights(routes) {
+  if (!Array.isArray(routes) || routes.length === 0) return routes;
+  const costs = routes.map(route => toRouteMetric(getDisplayCost(route)));
+  const times = routes.map(route => toRouteMetric(route.time, { positive: true }));
+  const minCost = Math.min(...costs);
+  const minTime = Math.min(...times);
+
+  routes.forEach((route, index) => {
+    const extraCost = Math.max(0, costs[index] - minCost);
+    const savedMinutes = Math.max(0, times[costs.indexOf(minCost)] - times[index]);
+    const extraMinutes = Math.max(0, times[index] - minTime);
+    route.value = {
+      extraCost: Math.round(extraCost * 10) / 10,
+      savedMinutes: Math.round(savedMinutes),
+      yuanPerMinuteSaved: savedMinutes > 0 ? Math.round(extraCost / savedMinutes * 100) / 100 : null,
+    };
+
+    if (costs[index] === minCost && times[index] === minTime) {
+      route.insight = '同时是最低费用和最快方案';
+    } else if (costs[index] === minCost) {
+      route.insight = extraMinutes > 0 ? `最低费用 · 比最快慢 ${Math.round(extraMinutes)} 分钟` : '最低费用';
+    } else if (times[index] === minTime) {
+      route.insight = `最快 · 多 ¥${extraCost.toFixed(1)}，比最低费用省 ${Math.round(savedMinutes)} 分钟`;
+    } else if (savedMinutes > 0) {
+      route.insight = `多 ¥${extraCost.toFixed(1)}，比最低费用省 ${Math.round(savedMinutes)} 分钟`;
+    } else {
+      route.insight = `比最快省 ¥${Math.max(0, costs[times.indexOf(minTime)] - costs[index]).toFixed(1)}`;
+    }
+  });
+  return routes;
+}
+
+// 在全局排序后去重：相同执行链路中，只有成本或时间差达到用户可感知程度才同时保留。
+// 因为输入已按当前偏好排好序，近似重复时自然保留更符合当前目标的一条。
+function optimizeRoutePortfolio(routes) {
+  if (!Array.isArray(routes)) return [];
+  const selected = [];
+  for (const route of routes) {
+    if (selected.some(existing => isNearEquivalentRoute(existing, route))) continue;
+    selected.push(route);
+  }
+  return addRouteValueInsights(selected);
+}
+
 function assignParetoRanks(routes) {
   const metrics = routes.map(route => ({
     cost: toRouteMetric(getDisplayCost(route)),
@@ -202,12 +283,18 @@ function sortRoutes(routes, mode = 'balanced') {
     const comfortRegret = normalizeRouteRegret(comforts[index], minComfort, Math.max(12, minComfort * 0.5));
     const paretoPenalty = Math.min(route.paretoRank || 0, 3) * 0.09;
     const reliabilityPenalty = getRouteReliabilityPenalty(route);
+    const minutesSavedVsCheapest = Math.max(0, times[costs.indexOf(minCost)] - times[index]);
+    const extraCostVsCheapest = Math.max(0, costs[index] - minCost);
+    const valuePenalty = mode === 'balanced' && minutesSavedVsCheapest > 0
+      ? Math.min(0.12, Math.max(0, extraCostVsCheapest / minutesSavedVsCheapest - 1) * 0.035)
+      : 0;
     const score =
       costRegret * weights.cost +
       timeRegret * weights.time +
       comfortRegret * weights.comfort +
       paretoPenalty +
-      reliabilityPenalty;
+      reliabilityPenalty +
+      valuePenalty;
 
     route.routeScore = Math.round(score * 10000) / 10000;
     route.scoreBreakdown = {
@@ -215,6 +302,7 @@ function sortRoutes(routes, mode = 'balanced') {
       time: Math.round(timeRegret * 1000) / 1000,
       comfort: Math.round(comfortRegret * 1000) / 1000,
       reliability: Math.round(reliabilityPenalty * 1000) / 1000,
+      value: Math.round(valuePenalty * 1000) / 1000,
     };
     return { route, score, originalIndex: index };
   });

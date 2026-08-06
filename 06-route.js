@@ -105,6 +105,7 @@ async function searchRoutes() {
     window._taxiAvailable = didiAvailable;  // 兼容既有引用
 
     sortRoutes(allRoutes, sortMode);
+    allRoutes = optimizeRoutePortfolio(allRoutes);
 
     // 给"当前模式最优"打上 best 徽章
     if (allRoutes.length > 0) {
@@ -526,14 +527,25 @@ function withTaxiPickup(seconds, taxiSegments = 1) {
 }
 
 // 高德会给出许多途经站。先挑出具有代表性的站点，避免一次查询发起几十个实时估价。
-function selectHybridStationCandidates(candidates, limit = 12) {
+function selectHybridStationCandidates(candidates, limit = 12, destination = null, speedMps = 8.3) {
   const ranked = candidates
     .filter(({ station }) => station.ratio >= 0.12 && station.ratio <= 0.94)
     .sort((a, b) => {
-      const score = candidate =>
-        Math.abs(candidate.station.ratio - 0.65) -
-        (candidate.station.transitMode === 'SUBWAY' ? 0.08 : 0) -
-        Math.min(candidate.station.segmentDistance || 0, 5000) / 100000;
+      const score = candidate => {
+        const { station, plan } = candidate;
+        const point = routeCoordinatePair(station.location);
+        const end = routeCoordinatePair(destination);
+        const remainingTransitSeconds = Math.max(0, (plan?.time || 0) - (station.prefixTime || 0));
+        const taxiDistance = point && end ? calculateDistance(point, end) : 0;
+        const estimatedTaxiSeconds = taxiDistance > 0
+          ? taxiDistance / Math.max(3, speedMps) + TAXI_PICKUP_SECONDS
+          : remainingTransitSeconds;
+        // 先找真正能跳过慢段、节省时间的换乘点，再兼顾地铁稳定性与线路覆盖。
+        const timeSavedMinutes = (remainingTransitSeconds - estimatedTaxiSeconds) / 60;
+        const taxiBurden = taxiDistance / 1000 * 0.08;
+        return -timeSavedMinutes * 0.18 + taxiBurden + Math.abs(station.ratio - 0.65) * 0.25 -
+          (station.transitMode === 'SUBWAY' ? 0.12 : 0);
+      };
       return score(a) - score(b);
     });
   const seenCorridors = new Set();
@@ -549,7 +561,7 @@ function selectHybridStationCandidates(candidates, limit = 12) {
   ].slice(0, limit);
 }
 
-function selectTaxiToTransitCandidates(result, origin, limit = 12) {
+function selectTaxiToTransitCandidates(result, origin, limit = 12, speedMps = 8.3) {
   const candidates = [];
   const seen = new Set();
 
@@ -619,13 +631,16 @@ function selectTaxiToTransitCandidates(result, origin, limit = 12) {
   });
 
   const ranked = candidates.sort((a, b) => {
-      const score = candidate =>
-        candidate.directDistance / 1000 -
-        Math.min(candidate.remainingDistance, 12000) / 6000 -
-        Math.min(candidate.replacedPrefixTime, 2400) / 2400 -
+    const score = candidate => {
+      const taxiSeconds = candidate.directDistance / Math.max(3, speedMps) + TAXI_PICKUP_SECONDS;
+      const timeSavedMinutes = (candidate.replacedPrefixTime - taxiSeconds) / 60;
+      return candidate.directDistance / 1000 * 0.12 -
+        timeSavedMinutes * 0.2 -
+        Math.min(candidate.remainingDistance, 12000) / 8000 -
         (candidate.isSubway ? 0.35 : 0);
-      return score(a) - score(b);
-    });
+    };
+    return score(a) - score(b);
+  });
   const seenCorridors = new Set();
   const diverse = ranked.filter(candidate => {
     if (seenCorridors.has(candidate.corridorKey)) return false;
@@ -871,7 +886,12 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   }
 
   // 算出每个候选站点的「公交累计 + 打车到终点」成本
-  const selectedCandidates = selectHybridStationCandidates(candidates);
+  const selectedCandidates = selectHybridStationCandidates(
+    candidates,
+    12,
+    endLngLat,
+    traffic.speedMps || 8.3
+  );
   const hybrids = (await settleRouteCreations(
     selectedCandidates.map(c => buildHybridFromStation(
       c.plan, c.station, endLngLat, traffic, c.planIndex
@@ -907,7 +927,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
   const speedMps = traffic.speedMps > 0 ? traffic.speedMps : 8.3;
 
   // 不只看首个上车站，也允许打车跳过慢公交/绕路换乘，直接接入后续地铁或公交主干。
-  const candidates = selectTaxiToTransitCandidates(result, origin);
+  const candidates = selectTaxiToTransitCandidates(result, origin, 12, speedMps);
 
   // 异步估算每个候选的 taxi 价格（每段独立 Driving.search，不用统一的 speedMps）
   const builtHybrids = await settleRouteCreations(candidates.map(async c => {

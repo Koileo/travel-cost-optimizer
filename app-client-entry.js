@@ -14,6 +14,7 @@ document.addEventListener('click', (e) => {
   });
   if (allRoutes.length > 0) {
     sortRoutes(allRoutes, sortMode);
+    addRouteValueInsights(allRoutes);
     allRoutes.forEach(route => { route.badge = null; });
     if (allRoutes[0]) allRoutes[0].badge = 'best';
     renderResults(selectRoutesForDisplay(allRoutes));
@@ -63,6 +64,7 @@ function updatePassengerCount(nextCount) {
   if (passengerCountEl) passengerCountEl.textContent = passengerCount;
   if (allRoutes.length > 0) {
     sortRoutes(allRoutes, sortMode);
+    addRouteValueInsights(allRoutes);
     allRoutes.forEach(route => { route.badge = null; });
     if (allRoutes[0]) allRoutes[0].badge = 'best';
     renderResults(selectRoutesForDisplay(allRoutes));

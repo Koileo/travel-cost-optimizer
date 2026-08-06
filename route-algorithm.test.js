@@ -11,12 +11,12 @@ const context = {
   countTaxiSegments: route => route.taxiSegments || 0,
   getDisplayCost: route => route.cost,
   getWeatherPenalty: () => ({ walkBonus: 0, rideBonus: 0, label: '' }),
-  getSegmentMode: segment => segment.type,
+  getSegmentMode: segment => String(segment.type || segment.mode || segment.transit_mode || 'walk').toLowerCase(),
   getSegmentMinutes: segment => segment.time / 60,
 };
 vm.createContext(context);
 vm.runInContext(
-  `${source}\nglobalThis.routeAlgorithm = { sortRoutes, selectRoutesForDisplay, isPracticalRoute, filterPracticalRoutes };`,
+  `${source}\nglobalThis.routeAlgorithm = { sortRoutes, selectRoutesForDisplay, isPracticalRoute, filterPracticalRoutes, getRouteSemanticSignature, optimizeRoutePortfolio, addRouteValueInsights };`,
   context
 );
 const {
@@ -24,6 +24,9 @@ const {
   selectRoutesForDisplay,
   isPracticalRoute,
   filterPracticalRoutes,
+  getRouteSemanticSignature,
+  optimizeRoutePortfolio,
+  addRouteValueInsights,
 } = context.routeAlgorithm;
 
 function route(id, cost, time, comfort, extra = {}) {
@@ -139,4 +142,52 @@ test('超长全程步行和骑行在排序前直接淘汰', () => {
     filterPracticalRoutes([absurdWalk, practicalWalk, absurdRide, disguisedHybrid]).map(item => item.id),
     ['nearby-walk']
   );
+});
+
+test('不同来源但执行链路相同的近似方案只展示当前排序更优的一条', () => {
+  const first = route('source-a', 12, 40, 20, {
+    segments: [{ type: 'transit', lineName: '1号线(苹果园-四惠东)', fromStation: 'A', toStation: 'B' }],
+  });
+  const duplicate = route('source-b', 13, 42, 20, {
+    segments: [{ type: 'transit', lineName: '1号线', fromStation: 'A', toStation: 'B' }],
+  });
+  sortRoutes([first, duplicate], 'balanced');
+  const optimized = optimizeRoutePortfolio([first, duplicate]);
+
+  assert.equal(getRouteSemanticSignature(first), getRouteSemanticSignature(duplicate));
+  assert.equal(optimized.length, 1);
+  assert.equal(optimized[0].id, 'source-a');
+});
+
+test('同一链路存在明显省时取舍时两条都保留并解释边际价值', () => {
+  const cheap = route('cheap', 5, 60, 20, {
+    segments: [{ type: 'transit', lineName: '2号线', fromStation: 'A', toStation: 'B' }],
+  });
+  const fast = route('fast', 15, 35, 20, {
+    segments: [{ type: 'transit', lineName: '2号线', fromStation: 'A', toStation: 'B' }],
+  });
+  const optimized = optimizeRoutePortfolio([cheap, fast]);
+
+  assert.equal(optimized.length, 2);
+  assert.equal(fast.value.savedMinutes, 25);
+  assert.equal(fast.value.yuanPerMinuteSaved, 0.4);
+  assert.match(fast.insight, /多 ¥10\.0.*省 25 分钟/);
+});
+
+test('原始公交段会读取嵌套线路字段，不把不同地铁线误判为重复', () => {
+  const rawTransitRoute = (id, lineName) => route(id, 5, 40, 20, {
+    segments: [{
+      transit_mode: 'SUBWAY',
+      transit: {
+        lines: [{ name: lineName }],
+        on_station: { name: '起始站' },
+        off_station: { name: '终到站' },
+      },
+    }],
+  });
+  const first = rawTransitRoute('line-1', '1号线');
+  const second = rawTransitRoute('line-2', '2号线');
+
+  assert.notEqual(getRouteSemanticSignature(first), getRouteSemanticSignature(second));
+  assert.equal(optimizeRoutePortfolio([first, second]).length, 2);
 });

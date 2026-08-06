@@ -277,6 +277,7 @@ function restoreSearchState() {
     if (allRoutes.length === 0) return false;
     // 缓存可能来自旧版评分模型，恢复时按当前规则重新计算，避免沿用过期顺序。
     sortRoutes(allRoutes, sortMode);
+    allRoutes = optimizeRoutePortfolio(allRoutes);
     allRoutes.forEach(route => { route.badge = null; });
     if (allRoutes[0]) allRoutes[0].badge = 'best';
     renderResults(selectRoutesForDisplay(allRoutes));
@@ -412,6 +413,7 @@ function renderResults(routes) {
           </div>
         </div>
         <div class="result-desc">${descriptionToHtml(route.description || '')}</div>
+        ${route.insight ? `<div class="result-insight"><i data-lucide="lightbulb"></i><span>${route.insight}</span></div>` : ''}
         <div class="result-footer">
           ${sourceBadgeHtml}
           ${congestionHtml}

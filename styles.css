@@ -1101,6 +1101,27 @@ body {
   line-height: 1.55;
 }
 
+.result-insight {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-top: var(--space-2);
+  padding: 5px 9px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 9%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.result-insight > [data-lucide] {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .desc-step {
   display: inline-flex;
   align-items: center;

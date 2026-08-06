@@ -61,6 +61,28 @@ test('混合候选站点排除过近端点并限制实时估价数量', () => {
   assert.ok(selected.every(({ station }) => station.ratio >= 0.12 && station.ratio <= 0.94));
 });
 
+test('公交转打车候选优先选择能跳过慢段并实际省时的站点', () => {
+  const candidates = [
+    {
+      plan: { time: 4_800 },
+      station: {
+        name: '慢段之前', ratio: 0.45, prefixTime: 900,
+        location: { lng: 1, lat: 0 }, transitMode: 'SUBWAY',
+      },
+    },
+    {
+      plan: { time: 4_800 },
+      station: {
+        name: '接近终点', ratio: 0.65, prefixTime: 4_200,
+        location: { lng: 9, lat: 0 }, transitMode: 'SUBWAY',
+      },
+    },
+  ];
+  const selected = selectHybridStationCandidates(candidates, 1, [10, 0], 10);
+
+  assert.equal(selected[0].station.name, '慢段之前');
+});
+
 test('途经站会成为公交加打车的候选，并保留其线路进度', () => {
   const plan = {
     distance: 10_000,
