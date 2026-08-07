@@ -7,9 +7,9 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '04-map.js'), 'utf8');
 const context = {};
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.mapRouting = { mapCoordinatePair, normalizeMapPath, getSegmentMapPath, getRouteMapPath };`, context);
+vm.runInContext(`${source}\nglobalThis.mapRouting = { mapCoordinatePair, normalizeMapPath, getSegmentMapPath, getRouteMapPath, getRouteFitPadding };`, context);
 
-const { mapCoordinatePair, normalizeMapPath, getSegmentMapPath, getRouteMapPath } = context.mapRouting;
+const { mapCoordinatePair, normalizeMapPath, getSegmentMapPath, getRouteMapPath, getRouteFitPadding } = context.mapRouting;
 const plain = value => JSON.parse(JSON.stringify(value));
 
 test('兼容高德 LngLat、数组和字符串坐标', () => {
@@ -31,4 +31,9 @@ test('公交和步行都优先读取 Transfer 的 segment.transit.path', () => {
 test('驾车路线没有顶层 path 时使用 steps 轨迹', () => {
   const route = { steps: [{ path: [[116.4, 39.9], [116.405, 39.905]] }, { path: [[116.405, 39.905], [116.41, 39.91]] }] };
   assert.deepEqual(plain(getRouteMapPath(route)), [[116.4, 39.9], [116.405, 39.905], [116.405, 39.905], [116.41, 39.91]]);
+});
+
+test('路线视野边距随地图尺寸缩放，不再固定挤占 60 像素', () => {
+  assert.deepEqual(plain(getRouteFitPadding(478, 230)), [23, 38, 23, 38]);
+  assert.deepEqual(plain(getRouteFitPadding(960, 480)), [48, 64, 48, 64]);
 });

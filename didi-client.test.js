@@ -9,7 +9,6 @@ const source = fs.readFileSync(path.join(__dirname, '05-didi.js'), 'utf8');
 function createClientContext(fetch) {
   const context = {
     __DIDI_TEST_MIN_INTERVAL_MS: 0,
-    __DIDI_TEST_REQUEST_BUDGET: 8,
     appSettings: { city: '北京', didiEndpoint: '', didiHeaders: {}, didiBody: {} },
     startPOI: { name: '起点', address: '' },
     endPOI: { name: '终点', address: '' },
@@ -21,7 +20,7 @@ function createClientContext(fetch) {
   };
   vm.createContext(context);
   vm.runInContext(
-    `${source}\nglobalThis.didiClient = { getDidiEstimate, beginDidiSearchBatch, resetDidiRequestState, recordDidiResponseStatus, reserveDidiRequestBudget, cacheTtlMs: DIDI_ESTIMATE_CACHE_TTL_MS };`,
+    `${source}\nglobalThis.didiClient = { getDidiEstimate, beginDidiSearchBatch, resetDidiRequestState, recordDidiResponseStatus, cacheTtlMs: DIDI_ESTIMATE_CACHE_TTL_MS };`,
     context
   );
   return context.didiClient;
@@ -77,16 +76,17 @@ test('首次 520 就会打开滴滴估价熔断', () => {
   );
 });
 
-test('单次搜索最多预留八个实时滴滴报价', () => {
-  const client = createClientContext(async () => successfulResponse());
+test('单次搜索超过八个不同路段时仍全部请求滴滴实时报价', async () => {
+  let requestCount = 0;
+  const client = createClientContext(async () => {
+    requestCount++;
+    return successfulResponse();
+  });
   client.beginDidiSearchBatch();
-  for (let index = 0; index < 8; index++) {
-    assert.doesNotThrow(() => client.reserveDidiRequestBudget());
-  }
-  assert.throws(
-    () => client.reserveDidiRequestBudget(),
-    error => error.code === 'DIDI_BUDGET_EXHAUSTED'
-  );
+  await Promise.all(Array.from({ length: 12 }, (_, index) =>
+    client.getDidiEstimate([0, 0], [index + 1, index + 1])
+  ));
+  assert.equal(requestCount, 12);
 });
 
 test('滴滴实时价格只缓存三分钟', () => {

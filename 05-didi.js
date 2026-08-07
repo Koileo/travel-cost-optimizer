@@ -22,12 +22,10 @@ const _didiEstimateInFlight = new Map();
 const DIDI_ESTIMATE_CACHE_TTL_MS = globalThis.__DIDI_TEST_CACHE_TTL_MS ?? 3 * 60 * 1000;
 const DIDI_MAX_CONCURRENT_REQUESTS = 1;
 const DIDI_MIN_REQUEST_INTERVAL_MS = globalThis.__DIDI_TEST_MIN_INTERVAL_MS ?? 700;
-const DIDI_SEARCH_REQUEST_BUDGET = globalThis.__DIDI_TEST_REQUEST_BUDGET ?? 8;
 const DIDI_CIRCUIT_BREAK_MS = 60 * 1000;
 const _didiRequestQueue = [];
 let _didiActiveRequests = 0;
 let _didiLastRequestAt = 0;
-let _didiSearchBudgetRemaining = DIDI_SEARCH_REQUEST_BUDGET;
 let _didiFailureStreak = 0;
 let _didiCircuitOpenUntil = 0;
 let _didiCircuitNoticeShown = false;
@@ -40,7 +38,6 @@ function createDidiClientError(message, code, status = null) {
 }
 
 function beginDidiSearchBatch() {
-  _didiSearchBudgetRemaining = DIDI_SEARCH_REQUEST_BUDGET;
   _didiCircuitNoticeShown = false;
 }
 
@@ -49,13 +46,6 @@ function resetDidiRequestState() {
   _didiCircuitOpenUntil = 0;
   _didiCircuitNoticeShown = false;
   beginDidiSearchBatch();
-}
-
-function reserveDidiRequestBudget() {
-  if (_didiSearchBudgetRemaining <= 0) {
-    throw createDidiClientError('本轮实时估价额度已用完', 'DIDI_BUDGET_EXHAUSTED');
-  }
-  _didiSearchBudgetRemaining--;
 }
 
 function openDidiCircuit(status) {
@@ -348,7 +338,6 @@ async function getDidiEstimate(fromLocation, toLocation, tripMeta = {}) {
   if (Date.now() < _didiCircuitOpenUntil) {
     throw createDidiClientError('滴滴估价熔断中', 'DIDI_CIRCUIT_OPEN');
   }
-  reserveDidiRequestBudget();
 
   const request = (async () => {
     console.info('[滴滴估价请求]', { from, to });
@@ -481,7 +470,7 @@ async function estimateTaxi(distanceMeters, timeSeconds, fromLocation, toLocatio
         console.warn('[taxi] 滴滴估价已熔断，本轮剩余候选改用本地规则');
         _didiCircuitNoticeShown = true;
       }
-    } else if (err.code !== 'DIDI_BUDGET_EXHAUSTED') {
+    } else {
       console.warn('[taxi] 滴滴估价失败，回退本地规则:', err.message);
     }
   }

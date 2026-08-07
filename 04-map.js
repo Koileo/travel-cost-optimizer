@@ -342,8 +342,9 @@ function updateMapMarkers() {
       position: startPOI.location,
       title: '起点',
       icon: new AMap.Icon({
-        size: new AMap.Size(32, 32),
-        image: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle fill="%2334A853" cx="16" cy="16" r="14"/><text x="16" y="21" text-anchor="middle" fill="white" font-size="14">起点</text></svg>'
+        size: new AMap.Size(26, 26),
+        imageSize: new AMap.Size(26, 26),
+        image: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26"><circle fill="%2334A853" cx="13" cy="13" r="11" stroke="white" stroke-width="2"/><text x="13" y="17" text-anchor="middle" fill="white" font-size="12" font-weight="600">起</text></svg>'
       })
     });
     map.add(startMarker);
@@ -354,8 +355,9 @@ function updateMapMarkers() {
       position: endPOI.location,
       title: '终点',
       icon: new AMap.Icon({
-        size: new AMap.Size(32, 32),
-        image: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle fill="%23EA4335" cx="16" cy="16" r="14"/><text x="16" y="21" text-anchor="middle" fill="white" font-size="14">终点</text></svg>'
+        size: new AMap.Size(26, 26),
+        imageSize: new AMap.Size(26, 26),
+        image: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26"><circle fill="%23EA4335" cx="13" cy="13" r="11" stroke="white" stroke-width="2"/><text x="13" y="17" text-anchor="middle" fill="white" font-size="12" font-weight="600">终</text></svg>'
       })
     });
     map.add(endMarker);
@@ -458,18 +460,46 @@ function clearRouteOverlays() {
   _routeOverlays = [];
 }
 
+function getRouteFitPadding(width, height) {
+  const horizontal = Math.max(24, Math.min(64, Math.round((Number(width) || 0) * 0.08)));
+  const vertical = Math.max(20, Math.min(48, Math.round((Number(height) || 0) * 0.1)));
+  return [vertical, horizontal, vertical, horizontal];
+}
+
+function fitRouteOverlays() {
+  if (!map || !mapContainer) return;
+  const validOverlays = _routeOverlays.filter(o => o && typeof o.setMap === 'function');
+  if (!validOverlays.length) return;
+  const rect = mapContainer.getBoundingClientRect();
+  map.resize();
+  map.setFitView(validOverlays, false, getRouteFitPadding(rect.width, rect.height), 16);
+}
+
 function moveMapToDetail(onReady) {
   const detailMap = document.getElementById('route-detail-map');
   if (!detailMap || !mapContainer || !map) return;
   detailMap.appendChild(mapContainer);
+  if (_routeMapResizeObserver) _routeMapResizeObserver.disconnect();
+  if (typeof ResizeObserver === 'function') {
+    _routeMapResizeObserver = new ResizeObserver(() => fitRouteOverlays());
+    _routeMapResizeObserver.observe(detailMap);
+  }
   requestAnimationFrame(() => {
     map.resize();
     if (typeof onReady === 'function') onReady();
+    requestAnimationFrame(() => fitRouteOverlays());
+    clearTimeout(_routeFitTimer);
+    _routeFitTimer = setTimeout(() => fitRouteOverlays(), 300);
   });
 }
 
 function restoreMapToPage() {
   if (!mapContainer || !mapSection || mapContainer.parentElement === mapSection) return;
+  if (_routeMapResizeObserver) {
+    _routeMapResizeObserver.disconnect();
+    _routeMapResizeObserver = null;
+  }
+  clearTimeout(_routeFitTimer);
   mapSection.appendChild(mapContainer);
   requestAnimationFrame(() => {
     map.resize();
@@ -489,6 +519,7 @@ function drawRouteOnMap(route) {
     SUBWAY: '#16B364', BUS: '#3B82F6', WALK: '#94A3B8', RIDE: '#06B6D4', TAXI: '#F59E0B',
   };
   const ZINDEX_LINE = 10, ZINDEX_STATION = 60;
+  const stationKeys = new Set();
 
   // 辅助：画线段（带白色描边，增加层次感）
   function addLine(path, color, opts = {}) {
@@ -532,10 +563,13 @@ function drawRouteOnMap(route) {
 
   // 辅助：画站点标记
   function addStation(lngLat, name, mode) {
+    const stationKey = `${Number(lngLat[0]).toFixed(5)},${Number(lngLat[1]).toFixed(5)}|${name || ''}|${mode || ''}`;
+    if (stationKeys.has(stationKey)) return;
+    stationKeys.add(stationKey);
     const color = COLORS[mode] || '#6B7280';
-    const size = 18;
+    const size = 14;
     const dotSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">
-      <circle cx="${size/2}" cy="${size/2}" r="6" fill="${color}" stroke="white" stroke-width="3"/>
+      <circle cx="${size/2}" cy="${size/2}" r="4.5" fill="${color}" stroke="white" stroke-width="2"/>
     </svg>`;
     const marker = new AMap.Marker({
       position: lngLat,
@@ -547,12 +581,8 @@ function drawRouteOnMap(route) {
         image: dotSvg,
       }),
       label: name ? {
-        content: `<div style="
-          background:rgba(255,255,255,0.95);color:#1e293b;padding:3px 10px;border-radius:6px;
-          font-size:12px;font-weight:500;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.12);
-          margin-top:6px;line-height:1.3;
-        ">${name}</div>`,
-        offset: new AMap.Pixel(-35, 14),
+        content: `<div class="route-map-label">${name}</div>`,
+        offset: new AMap.Pixel(9, -7),
       } : undefined,
     });
     marker.setMap(map);
@@ -742,11 +772,8 @@ function drawRouteOnMap(route) {
     }
   }
 
-  // 自适应视野（只传有效 overlay）
-  const validOverlays = _routeOverlays.filter(o => o && typeof o.setMap === 'function');
-  if (validOverlays.length > 0) {
-    map.setFitView(validOverlays, false, [60, 60, 60, 60]);
-  }
+  // 容器大小在移动端、桌面弹窗中不同，按实际尺寸留白并限制最大缩放。
+  fitRouteOverlays();
 }
 
 // ─────────────────────────────────────────────────────

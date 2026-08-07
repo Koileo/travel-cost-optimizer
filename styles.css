@@ -733,7 +733,7 @@ body {
 }
 
 .route-detail-map {
-  height: clamp(180px, 28vh, 260px);
+  height: clamp(240px, 38vh, 340px);
   margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-5);
   overflow: hidden;
   border-bottom: 1px solid var(--border);
@@ -742,6 +742,36 @@ body {
 
 .route-detail-map #map-container {
   height: 100%;
+}
+
+/* 高德 MarkerLabel 默认自带边框和内边距；路线标签改成轻量小胶囊，减少遮挡。 */
+#map-container .amap-marker-label {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.route-map-label {
+  max-width: 72px;
+  overflow: hidden;
+  padding: 1px 4px;
+  border: 1px solid rgb(255 255 255 / 0.8);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.82);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+  color: #334155;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .route-map-label {
+  border-color: rgb(63 63 70 / 0.8);
+  background: rgb(24 24 27 / 0.82);
+  color: #e4e4e7;
 }
 
 /* Results ------------------------------------------------------------------- */
@@ -1281,7 +1311,7 @@ body {
   }
 
   .route-detail-map {
-    height: clamp(184px, 29dvh, 248px);
+    height: clamp(240px, 38dvh, 340px);
   }
 }
 
@@ -1300,6 +1330,18 @@ body {
     border-radius: var(--radius-xl);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
+  }
+}
+
+@media (min-width: 720px) {
+  .modal-content-route {
+    width: min(960px, calc(100vw - 40px));
+    max-width: 960px;
+    max-height: min(92vh, calc(100vh - 40px));
+  }
+
+  .modal-content-route .route-detail-map {
+    height: clamp(320px, 48vh, 480px);
   }
 }
 

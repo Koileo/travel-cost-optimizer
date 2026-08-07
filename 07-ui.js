@@ -786,6 +786,8 @@ function renderTimeline(steps) {
 // 显示路线详情
 // ── 地图路线叠加层管理 ──────────────────────────────────
 let _routeOverlays = [];
+let _routeFitTimer = null;
+let _routeMapResizeObserver = null;
 const mapSection = document.querySelector('.map-section');
 
 function showRouteDetail(route) {
