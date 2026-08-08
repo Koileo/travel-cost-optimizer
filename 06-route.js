@@ -39,6 +39,8 @@ async function searchRoutes() {
     const transitResult = baseRouteResults[1]?.plans ? baseRouteResults[1] : null;
     const walkingRoutes = Array.isArray(baseRouteResults[2]) ? baseRouteResults[2] : [];
     const ridingRoutes = Array.isArray(baseRouteResults[3]) ? baseRouteResults[3] : [];
+    // 高德 Transfer 并发过高会让额外定向规划返回 error；基础公交完成后再分批探索端点附近站。
+    const endpointExpansion = await searchEndpointExpandedTransitPlans();
     _currentWeather = weatherData;
     if (weatherData) {
       console.info('[天气] 已更新舒适度基准:', weatherData);
@@ -52,6 +54,21 @@ async function searchRoutes() {
 
     const transitRoutes = buildFullTransitRoutes(transitResult);
     const fullTaxiCost = taxiRoutes[0] ? taxiRoutes[0].cost : null;
+    // 端点附近地铁站是独立发现的，不依赖高德对“起点→终点”的默认公交骨架。
+    // 各类混合方案只合并与自身方向匹配的扩展骨架，避免把未闭合路线当成全程公交。
+    const transitToTaxiResult = mergeTransitPlanResults([
+      transitResult,
+      endpointExpansion.destinationResult,
+    ], 28);
+    const taxiToTransitResult = mergeTransitPlanResults([
+      transitResult,
+      endpointExpansion.originResult,
+    ], 28);
+    const taxiTransitTaxiResult = mergeTransitPlanResults([
+      transitResult,
+      endpointExpansion.originResult,
+      endpointExpansion.destinationResult,
+    ], 32);
     const [
       multimodalRoutes,
       busThenTaxiRoutes,
@@ -59,9 +76,9 @@ async function searchRoutes() {
       taxiTransitTaxiRoutes,
     ] = (await settleRouteCreations([
       searchTransitCombinations(traffic, transitResult),
-      searchBusThenTaxi(traffic, transitResult, fullTaxiCost),
-      searchTaxiToTransit(traffic, transitResult, fullTaxiCost),
-      searchTaxiTransitTaxi(traffic, transitResult, fullTaxiCost),
+      searchBusThenTaxi(traffic, transitToTaxiResult, fullTaxiCost),
+      searchTaxiToTransit(traffic, taxiToTransitResult, fullTaxiCost),
+      searchTaxiTransitTaxi(traffic, taxiTransitTaxiResult, fullTaxiCost),
     ], '混合方案')).map(routes => Array.isArray(routes) ? routes : []);
     const hybridRoutes = dedupeHybridRoutes([
       ...multimodalRoutes,
@@ -345,6 +362,191 @@ function mergeTransitPlanResults(results, limit = 16) {
   return { ...validResults[0], plans: merged };
 }
 
+const ENDPOINT_STATION_SEARCH_RADIUS_M = 6_000;
+const ENDPOINT_STATION_LIMIT = 3;
+
+function normalizeNearbyStationName(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/地铁站.*$/u, '')
+    .replace(/[-－—·]?[A-H]?\d*号?(?:出)?口.*$/iu, '')
+    .replace(/站$/u, '')
+    .replace(/[-－—·]+$/u, '')
+    .trim();
+}
+
+// PlaceSearch 经常把同一站的多个出入口分别返回。按站名合并，只保留离端点最近的入口，
+// 再选取少量不同站点用于扩展公交骨架，控制额外规划请求数量。
+function selectNearbyStationPOIs(
+  pois,
+  endpoint,
+  limit = ENDPOINT_STATION_LIMIT,
+  { minDistance = 450, maxDistance = ENDPOINT_STATION_SEARCH_RADIUS_M } = {}
+) {
+  const end = routeCoordinatePair(endpoint);
+  if (!end || !Array.isArray(pois)) return [];
+  const bestByStation = new Map();
+
+  pois.forEach(poi => {
+    const point = routeCoordinatePair(poi?.location);
+    const stationName = normalizeNearbyStationName(poi?.name);
+    if (!point || !stationName) return;
+    const distance = calculateDistance(end, point);
+    if (!Number.isFinite(distance) || distance < minDistance || distance > maxDistance) return;
+    const candidate = {
+      ...poi,
+      name: poi.name || `${stationName}地铁站`,
+      stationName,
+      location: { lng: point[0], lat: point[1] },
+      endpointDistance: distance,
+    };
+    const previous = bestByStation.get(stationName);
+    if (!previous || distance < previous.endpointDistance) bestByStation.set(stationName, candidate);
+  });
+
+  return [...bestByStation.values()]
+    .sort((a, b) => a.endpointDistance - b.endpointDistance || a.stationName.localeCompare(b.stationName, 'zh-CN'))
+    .slice(0, limit);
+}
+
+function searchNearbySubwayStations(endpoint) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => finish([]), 6_000);
+
+    try {
+      AMap.plugin('AMap.PlaceSearch', () => {
+        if (settled) return;
+        try {
+          const search = new AMap.PlaceSearch({
+            city: appSettings.city || '北京',
+            citylimit: true,
+            type: '地铁站',
+            pageSize: 20,
+            pageIndex: 1,
+            extensions: 'all',
+          });
+          search.searchNearBy('地铁站', endpoint, ENDPOINT_STATION_SEARCH_RADIUS_M, (status, result) => {
+            const pois = status === 'complete' ? result?.poiList?.pois : [];
+            finish(selectNearbyStationPOIs(pois, endpoint));
+          });
+        } catch (error) {
+          console.warn('[端点扩展] 附近地铁站搜索失败:', error);
+          finish([]);
+        }
+      });
+    } catch (error) {
+      console.warn('[端点扩展] 地铁站插件不可用:', error);
+      finish([]);
+    }
+  });
+}
+
+function searchTransitToEndpointStation(from, to, side, target) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const timeout = setTimeout(() => finish(null), 8_000);
+
+    try {
+      const fromPair = routeCoordinatePair(from);
+      const toPair = routeCoordinatePair(to);
+      if (!fromPair || !toPair) return finish(null);
+      const planner = new AMap.Transfer({
+        city: appSettings.city || '北京',
+        policy: AMap.TransferPolicy?.LEAST_TIME ?? 0,
+        nightflag: true,
+        panel: null,
+      });
+      planner.search(
+        new AMap.LngLat(fromPair[0], fromPair[1]),
+        new AMap.LngLat(toPair[0], toPair[1]),
+        (status, result) => {
+          if (status !== 'complete' || !result?.plans?.length) {
+            console.info(
+              `[端点扩展] ${side === 'origin' ? '起点侧' : '终点侧'}「${target.stationName || target.name}」` +
+              `定向规划状态=${status || 'unknown'}`
+            );
+            return finish(null);
+          }
+          const plans = result.plans.slice(0, 2).map(plan => ({
+            ...plan,
+            _endpointExpansionSide: side,
+            _endpointExpansionTarget: {
+              name: target.stationName || target.name,
+              location: target.location,
+              endpointDistance: target.endpointDistance,
+            },
+          }));
+          finish({ ...result, plans });
+        }
+      );
+    } catch (error) {
+      console.warn('[端点扩展] 定向公交规划失败:', error);
+      finish(null);
+    }
+  });
+}
+
+// 额外探索端点周围的地铁站：
+//   起点附近站 → 规划“该站到终点”，供“打车→地铁/公交”使用；
+//   终点附近站 → 规划“起点到该站”，供“地铁/公交→打车”使用。
+// 这些骨架不加入全程公交列表，只参与混合方案生成。
+async function searchEndpointExpandedTransitPlans() {
+  if (!isValidLocation(startPOI?.location) || !isValidLocation(endPOI?.location)) {
+    return { originResult: null, destinationResult: null };
+  }
+  const origin = routeCoordinatePair(startPOI.location);
+  const destination = routeCoordinatePair(endPOI.location);
+  if (!origin || !destination || calculateDistance(origin, destination) < 2_500) {
+    return { originResult: null, destinationResult: null };
+  }
+
+  const [originStations, destinationStations] = await Promise.all([
+    searchNearbySubwayStations(startPOI.location),
+    searchNearbySubwayStations(endPOI.location),
+  ]);
+  const tasks = [
+    ...originStations.map(station => ({
+      side: 'origin', station, from: station.location, to: endPOI.location,
+    })),
+    ...destinationStations.map(station => ({
+      side: 'destination', station, from: startPOI.location, to: station.location,
+    })),
+  ];
+  const completed = [];
+  for (let index = 0; index < tasks.length; index += 2) {
+    const batch = tasks.slice(index, index + 2);
+    completed.push(...await Promise.all(batch.map(task =>
+      searchTransitToEndpointStation(task.from, task.to, task.side, task.station)
+    )));
+  }
+  const originSearches = completed.filter(result => result?.plans?.[0]?._endpointExpansionSide === 'origin');
+  const destinationSearches = completed.filter(result => result?.plans?.[0]?._endpointExpansionSide === 'destination');
+
+  const originResult = mergeTransitPlanResults(originSearches, 10);
+  const destinationResult = mergeTransitPlanResults(destinationSearches, 10);
+  console.info(
+    `[端点扩展] 起点侧站=${originStations.map(station => station.stationName).join('/') || '无'}` +
+    `（${originResult?.plans?.length || 0} 条骨架）；` +
+    `终点侧站=${destinationStations.map(station => station.stationName).join('/') || '无'}` +
+    `（${destinationResult?.plans?.length || 0} 条骨架）`
+  );
+  return { originResult, destinationResult };
+}
+
 async function searchTransitPlans() {
   const policy = AMap.TransferPolicy || {};
   const policies = [
@@ -529,7 +731,7 @@ function withTaxiPickup(seconds, taxiSegments = 1) {
 // 高德会给出许多途经站。先挑出具有代表性的站点，避免一次查询发起几十个实时估价。
 function selectHybridStationCandidates(candidates, limit = 12, destination = null, speedMps = 8.3) {
   const ranked = candidates
-    .filter(({ station }) => station.ratio >= 0.12 && station.ratio <= 0.94)
+    .filter(({ station }) => station.ratio >= 0.12 && (station.ratio <= 0.94 || station.endpointExpanded))
     .sort((a, b) => {
       const score = candidate => {
         const { station, plan } = candidate;
@@ -544,7 +746,8 @@ function selectHybridStationCandidates(candidates, limit = 12, destination = nul
         const timeSavedMinutes = (remainingTransitSeconds - estimatedTaxiSeconds) / 60;
         const taxiBurden = taxiDistance / 1000 * 0.08;
         return -timeSavedMinutes * 0.18 + taxiBurden + Math.abs(station.ratio - 0.65) * 0.25 -
-          (station.transitMode === 'SUBWAY' ? 0.12 : 0);
+          (station.transitMode === 'SUBWAY' ? 0.12 : 0) -
+          (station.endpointExpanded ? 0.55 : 0);
       };
       return score(a) - score(b);
     });
@@ -567,6 +770,9 @@ function selectTaxiToTransitCandidates(result, origin, limit = 12, speedMps = 8.
 
   (result?.plans || []).forEach((plan, planIndex) => {
     const segments = plan.segments || [];
+    const firstTransitIndex = segments.findIndex(segment =>
+      segment.transit_mode === 'SUBWAY' || segment.transit_mode === 'BUS'
+    );
     segments.forEach((segment, segmentIndex) => {
       if (segment.transit_mode !== 'SUBWAY' && segment.transit_mode !== 'BUS') return;
       const viaStops = Array.isArray(segment.transit?.via_stops) ? segment.transit.via_stops :
@@ -619,6 +825,8 @@ function selectTaxiToTransitCandidates(result, origin, limit = 12, speedMps = 8.
           remainingDistance,
           replacedPrefixDistance: previousDistance + (segment.distance || 0) * fraction,
           replacedPrefixTime: previousTime + (segment.time || 0) * fraction,
+          endpointExpanded: plan._endpointExpansionSide === 'origin' &&
+            segmentIndex === firstTransitIndex && fraction === 0,
           isSubway: segment.transit_mode === 'SUBWAY',
           corridorKey: [
             segment.transit_mode,
@@ -637,7 +845,8 @@ function selectTaxiToTransitCandidates(result, origin, limit = 12, speedMps = 8.
       return candidate.directDistance / 1000 * 0.12 -
         timeSavedMinutes * 0.2 -
         Math.min(candidate.remainingDistance, 12000) / 8000 -
-        (candidate.isSubway ? 0.35 : 0);
+        (candidate.isSubway ? 0.35 : 0) -
+        (candidate.endpointExpanded ? 0.55 : 0);
     };
     return score(a) - score(b);
   });
@@ -856,7 +1065,9 @@ async function searchBusThenTaxi(traffic = { speedMps: 8.3 }, result = null, ful
   const candidates = [];
   const seen = new Set();
   result.plans.slice(0, 12).forEach((plan, planIndex) => {
-    collectTransferStations(plan).forEach(s => {
+    collectTransferStations(plan, {
+      includeTerminal: plan._endpointExpansionSide === 'destination',
+    }).forEach(s => {
       const prefixSignature = getTransitPlanSignature({
         segments: (plan.segments || []).slice(0, s.segmentIndex + 1),
       });
@@ -938,7 +1149,8 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
     if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
     // 综合步行时间+天气判断打车是否值得
-    if (!isTaxiWorthIt(taxiDistance).worthIt && c.replacedPrefixTime < 15 * 60) {
+    const isExpandedAccess = c.endpointExpanded && taxiDistance >= 450;
+    if (!isTaxiWorthIt(taxiDistance).worthIt && !isExpandedAccess && c.replacedPrefixTime < 15 * 60) {
       console.info(`[打车+公交] 跳过`);
       return null;
     }
@@ -1011,6 +1223,7 @@ async function searchTaxiToTransit(traffic = { speedMps: 8.3 }, result = null, f
       category: 'hybrid',
       type: 'hybrid',
       direction: 'taxi-to-transit',
+      endpointExpanded: c.endpointExpanded,
       cost: Math.round(totalCost * 100) / 100,
       time: totalTime,
       // 原 plan.distance 包含已被打车替代的起点步行段，这里只计剩余公交链路。
@@ -1071,13 +1284,18 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
     const middleDistance = segments
       .slice(firstIndex, lastIndex + 1)
       .reduce((sum, seg) => sum + (seg.distance || 0), 0);
-    if (initialWalk < 350 || finalWalk < 350 || middleDistance < 2000) return null;
+    const expansionSide = plan._endpointExpansionSide;
+    const expandedDistance = Number(plan._endpointExpansionTarget?.endpointDistance) || 0;
+    const effectiveInitialAccess = expansionSide === 'origin' ? expandedDistance : initialWalk;
+    const effectiveFinalAccess = expansionSide === 'destination' ? expandedDistance : finalWalk;
+    if (effectiveInitialAccess < 350 || effectiveFinalAccess < 350 || middleDistance < 2000) return null;
 
     return {
       plan, planIndex, segments, firstIndex, lastIndex, entry, exit,
       initialWalk,
       finalWalk,
-      accessWalk: initialWalk + finalWalk,
+      accessWalk: effectiveInitialAccess + effectiveFinalAccess,
+      endpointExpanded: !!expansionSide,
     };
   })
     .filter(Boolean)
@@ -1174,6 +1392,7 @@ async function searchTaxiTransitTaxi(traffic = { speedMps: 8.3 }, result = null,
       category: 'hybrid',
       type: 'hybrid',
       direction: 'taxi-transit-taxi',
+      endpointExpanded: candidate.endpointExpanded,
       cost: Math.round(totalCost * 100) / 100,
       time: Math.max(1, Math.round(withTaxiPickup(firstTaxiSeconds + middleTimeSeconds + secondTaxiSeconds, 2) / 60)),
       distance: firstTaxiDistance + middleRawSegments.reduce((sum, seg) => sum + (seg.distance || 0), 0) + secondTaxiDistance,
@@ -1210,11 +1429,16 @@ function getHybridCostCeiling(fullTaxiCost) {
 // 检测打车路线中的拥堵路段
 // 阈值：> 3.6 min/km (≈17 km/h) 算中等拥堵；> 5.4 min/km (≈11 km/h) 算严重拥堵
 
-function collectTransferStations(plan) {
+function collectTransferStations(plan, { includeTerminal = false } = {}) {
   const segments = plan.segments || [];
   const totalDistance = plan.distance || 1;
   if (totalDistance <= 0) return [];
   const stations = [];
+  const lastTransitIndex = segments.reduce(
+    (last, segment, index) =>
+      segment.transit_mode === 'SUBWAY' || segment.transit_mode === 'BUS' ? index : last,
+    -1
+  );
 
   let acc = 0;
   let elapsedTime = 0;
@@ -1235,7 +1459,8 @@ function collectTransferStations(plan) {
       if (!stop?.name || !isValidLocation(stop.location)) return;
       const normalizedFraction = Math.max(0, Math.min(1, fraction));
       const ratio = (segStart + (seg.distance || 0) * normalizedFraction) / totalDistance;
-      if (!isFinite(ratio) || ratio <= 0.04 || ratio >= 0.97) return;
+      const endpointExpanded = includeTerminal && source === 'off' && idx === lastTransitIndex;
+      if (!isFinite(ratio) || ratio <= 0.04 || (ratio >= 0.97 && !endpointExpanded)) return;
       const key = `${stop.name}|${Math.round(normalizedFraction * 1000)}`;
       if (seenInSegment.has(key)) return;
       seenInSegment.add(key);
@@ -1252,6 +1477,7 @@ function collectTransferStations(plan) {
         segmentDistance: seg.distance || 0,
         source,
         viaIndex,
+        endpointExpanded,
       });
     };
 
@@ -1399,7 +1625,8 @@ async function buildHybridFromStation(
   if (!isFinite(taxiDistance) || taxiDistance <= 0) return null;
 
   // 综合步行时间+天气判断打车是否值得
-  if (!isTaxiWorthIt(taxiDistance).worthIt) {
+  const isExpandedEgress = station.endpointExpanded && taxiDistance >= 450;
+  if (!isTaxiWorthIt(taxiDistance).worthIt && !isExpandedEgress) {
     console.info(`[公交+打车] 跳过`);
     return null;
   }
@@ -1436,6 +1663,7 @@ async function buildHybridFromStation(
     category: 'hybrid',
     type: 'hybrid',
     direction: 'transit-to-taxi',
+    endpointExpanded: station.endpointExpanded,
     cost: Math.round(totalCost * 100) / 100,
     time: totalTime,
     distance: (station.prefixDistance ?? (plan.distance || 0) * station.ratio) + taxiDistance,

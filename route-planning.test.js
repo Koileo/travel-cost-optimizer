@@ -23,7 +23,7 @@ const context = {
   __ROUTE_TEST_RESULT_TTL_MS: 3 * 60 * 1000,
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI, isRouteResultFresh };`, context);
+vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, selectNearbyStationPOIs, normalizeNearbyStationName, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI, isRouteResultFresh };`, context);
 const {
   withTaxiPickup,
   selectHybridStationCandidates,
@@ -33,6 +33,8 @@ const {
   createTransitPrefixRawSegments,
   mergeTransitPlanResults,
   selectTaxiToTransitCandidates,
+  selectNearbyStationPOIs,
+  normalizeNearbyStationName,
   isMeaningfulEndpointCombination,
   getTransitConnectionCategory,
   settleRouteCreations,
@@ -59,6 +61,44 @@ test('混合候选站点排除过近端点并限制实时估价数量', () => {
   const selected = selectHybridStationCandidates(candidates);
   assert.ok(selected.length <= 12);
   assert.ok(selected.every(({ station }) => station.ratio >= 0.12 && station.ratio <= 0.94));
+});
+
+test('端点附近地铁站会合并同站出入口并按距离选取', () => {
+  const selected = selectNearbyStationPOIs([
+    { name: '西直门地铁站-A口', location: { lng: 1.2, lat: 0 } },
+    { name: '西直门地铁站-B口', location: { lng: 1.1, lat: 0 } },
+    { name: '动物园地铁站', location: { lng: 2, lat: 0 } },
+    { name: '过近站地铁站', location: { lng: 0.1, lat: 0 } },
+    { name: '过远站地铁站', location: { lng: 8, lat: 0 } },
+  ], [0, 0], 3);
+
+  assert.equal(normalizeNearbyStationName('西直门地铁站-A口'), '西直门');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(selected.map(station => station.stationName))),
+    ['西直门', '动物园']
+  );
+  assert.equal(selected[0].location.lng, 1.1);
+});
+
+test('定向规划的终点站可突破普通比例上限成为打车接驳候选', () => {
+  const plan = {
+    distance: 5_000,
+    segments: [{
+      transit_mode: 'SUBWAY',
+      distance: 5_000,
+      time: 1_500,
+      transit: {
+        lines: [{ name: '4号线' }],
+        off_station: { name: '终点附近站', location: { lng: 5, lat: 0 } },
+      },
+    }],
+  };
+
+  assert.equal(collectTransferStations(plan).length, 0);
+  const expanded = collectTransferStations(plan, { includeTerminal: true });
+  assert.equal(expanded.length, 1);
+  assert.equal(expanded[0].endpointExpanded, true);
+  assert.equal(selectHybridStationCandidates([{ plan, station: expanded[0] }], 1, [6, 0]).length, 1);
 });
 
 test('公交转打车候选优先选择能跳过慢段并实际省时的站点', () => {
@@ -198,6 +238,30 @@ test('打车接公交候选包含后续换乘站，而不只包含第一站', ()
   assert.ok(candidates.some(candidate => candidate.onStation.name === '公交1路上车站'));
   assert.ok(candidates.some(candidate => candidate.onStation.name === '地铁2号线上车站'));
   assert.ok(candidates.some(candidate => candidate.onStation.name === '地铁中途站'));
+});
+
+test('起点附近站的定向公交骨架会标记首个上车站供打车接入', () => {
+  const result = {
+    plans: [{
+      _endpointExpansionSide: 'origin',
+      distance: 6_000,
+      segments: [{
+        transit_mode: 'SUBWAY',
+        distance: 6_000,
+        time: 1_800,
+        transit: {
+          lines: [{ name: '13号线' }],
+          on_station: { name: '起点附近站', location: { lng: 1, lat: 0 } },
+          off_station: { name: '终点站', location: { lng: 7, lat: 0 } },
+        },
+      }],
+    }],
+  };
+
+  const candidate = selectTaxiToTransitCandidates(result, [0, 0])
+    .find(item => item.onStation.name === '起点附近站');
+  assert.ok(candidate);
+  assert.equal(candidate.endpointExpanded, true);
 });
 
 test('只有含打车段的接驳路线才会被归为混合方案', () => {

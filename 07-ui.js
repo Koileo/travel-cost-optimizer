@@ -387,6 +387,9 @@ function renderResults(routes) {
         </span>
       `;
     }
+    const strategyBadgeHtml = route.endpointExpanded
+      ? `<span class="result-strategy"><i data-lucide="scan-search"></i><span>附近站智能接驳</span></span>`
+      : '';
 
     return `
       <div class="result-card ${route.badge || ''} ${route.category === 'taxi' && route.congestion ? 'has-warning' : ''}" data-id="${route.id}">
@@ -415,6 +418,7 @@ function renderResults(routes) {
         <div class="result-desc">${descriptionToHtml(route.description || '')}</div>
         ${route.insight ? `<div class="result-insight"><i data-lucide="lightbulb"></i><span>${route.insight}</span></div>` : ''}
         <div class="result-footer">
+          ${strategyBadgeHtml}
           ${sourceBadgeHtml}
           ${congestionHtml}
         </div>
