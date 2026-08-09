@@ -1,5 +1,70 @@
 // 06-route.js — 路线查询
 // 出行成本优化器
+function createRouteLoadingProgress() {
+  resultsList.innerHTML = `
+    <div class="loading">
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="loading-progress">
+        <div class="loading-progress-meta">
+          <p class="loading-text" aria-live="polite">正在准备路线查询</p>
+          <span class="loading-percent">8%</span>
+        </div>
+        <div
+          class="loading-progress-track"
+          role="progressbar"
+          aria-label="路线加载进度"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="8"
+        >
+          <span class="loading-progress-bar"></span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const label = resultsList.querySelector('.loading-text');
+  const percent = resultsList.querySelector('.loading-percent');
+  const progressbar = resultsList.querySelector('[role="progressbar"]');
+  let value = 8;
+  let ceiling = 18;
+
+  const render = () => {
+    const roundedValue = Math.round(value);
+    percent.textContent = `${roundedValue}%`;
+    progressbar.setAttribute('aria-valuenow', String(roundedValue));
+    progressbar.style.setProperty('--route-progress', String(roundedValue / 100));
+  };
+
+  // 网络请求没有可用的字节进度。各真实查询阶段内缓慢前进，并停在阶段上限等待结果。
+  const timer = setInterval(() => {
+    if (value >= ceiling) return;
+    value = Math.min(ceiling, value + 1);
+    render();
+  }, 420);
+
+  render();
+
+  return {
+    stage(nextLabel, nextValue, nextCeiling) {
+      label.textContent = nextLabel;
+      value = Math.max(value, nextValue);
+      ceiling = Math.max(value, nextCeiling);
+      render();
+    },
+    complete() {
+      label.textContent = '路线加载完成';
+      value = 100;
+      ceiling = 100;
+      render();
+      clearInterval(timer);
+    },
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
 async function searchRoutes() {
   if (!startPOI || !endPOI) {
     alert('请输入起点和终点');
@@ -11,12 +76,7 @@ async function searchRoutes() {
   searchBtn.disabled = true;
   searchBtn.querySelector('.btn-text').hidden = true;
   searchBtn.querySelector('.btn-loading').hidden = false;
-  resultsList.innerHTML = `
-    <div class="loading">
-      <div class="spinner"></div>
-      <p class="loading-text">正在查询最优路线…</p>
-    </div>
-  `;
+  const loadingProgress = createRouteLoadingProgress();
   refreshIcons();
   clearTimeout(_routeExpiryTimer);
   _routeExpiryTimer = null;
@@ -26,6 +86,7 @@ async function searchRoutes() {
 
   try {
     // 各基础路网只查询一次；接驳方案复用公共交通主干。
+    loadingProgress.stage('正在查询基础路线', 12, 46);
     const [baseRouteResults, weatherData] = await Promise.all([
       settleRouteCreations([
         searchFullTaxi(),
@@ -40,6 +101,7 @@ async function searchRoutes() {
     const walkingRoutes = Array.isArray(baseRouteResults[2]) ? baseRouteResults[2] : [];
     const ridingRoutes = Array.isArray(baseRouteResults[3]) ? baseRouteResults[3] : [];
     // 高德 Transfer 并发过高会让额外定向规划返回 error；基础公交完成后再分批探索端点附近站。
+    loadingProgress.stage('正在扩展换乘方案', 48, 63);
     const endpointExpansion = await searchEndpointExpandedTransitPlans();
     _currentWeather = weatherData;
     if (weatherData) {
@@ -69,6 +131,7 @@ async function searchRoutes() {
       endpointExpansion.originResult,
       endpointExpansion.destinationResult,
     ], 32);
+    loadingProgress.stage('正在组合出行方案', 65, 89);
     const [
       multimodalRoutes,
       busThenTaxiRoutes,
@@ -97,6 +160,7 @@ async function searchRoutes() {
       taxiTransitTaxi: taxiTransitTaxiRoutes.length,
       hybridAfterDedupe: hybridRoutes.length,
     });
+    loadingProgress.stage('正在筛选最优路线', 92, 98);
     allRoutes = filterPracticalRoutes([
       ...transitRoutes,
       ...walkingRoutes,
@@ -129,6 +193,7 @@ async function searchRoutes() {
       allRoutes[0].badge = 'best';
     }
 
+    loadingProgress.complete();
     renderResults(selectRoutesForDisplay(allRoutes));
     saveSearchState();
   } catch (error) {
@@ -149,6 +214,7 @@ async function searchRoutes() {
     `;
     refreshIcons();
   } finally {
+    loadingProgress.stop();
     searchBtn.disabled = false;
     searchBtn.querySelector('.btn-text').hidden = false;
     searchBtn.querySelector('.btn-loading').hidden = true;
