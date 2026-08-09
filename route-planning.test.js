@@ -20,7 +20,7 @@ const context = {
   setTimeout,
   clearTimeout,
   __ROUTE_DRIVING_TIMEOUT_MS: 5,
-  __ROUTE_TEST_RESULT_TTL_MS: 3 * 60 * 1000,
+  __ROUTE_TEST_RESULT_TTL_MS: 10 * 60 * 1000,
 };
 vm.createContext(context);
 vm.runInContext(`${source}\nglobalThis.routePlanning = { withTaxiPickup, selectHybridStationCandidates, dedupeHybridRoutes, collectTransferStations, createTransitPrefixSegments, createTransitPrefixRawSegments, mergeTransitPlanResults, selectTaxiToTransitCandidates, selectNearbyStationPOIs, normalizeNearbyStationName, isMeaningfulEndpointCombination, getTransitConnectionCategory, settleRouteCreations, createRouteId, getDrivingTime, routeCoordinatePair, normalizeRoutePOI, isRouteResultFresh };`, context);
@@ -357,10 +357,10 @@ test('缓存恢复会把数组和旧版高德内部坐标统一为普通位置�
   assert.deepEqual(JSON.parse(JSON.stringify(routeCoordinatePair(rehydrated.location))), [114, 22.5]);
 });
 
-test('路线价格和路况只在三分钟内视为新鲜', () => {
+test('路线结果在十分钟内视为新鲜', () => {
   const now = 1_000_000;
-  assert.equal(isRouteResultFresh(now - 179_999, now), true);
-  assert.equal(isRouteResultFresh(now - 180_000, now), false);
+  assert.equal(isRouteResultFresh(now - 599_999, now), true);
+  assert.equal(isRouteResultFresh(now - 600_000, now), false);
   assert.equal(isRouteResultFresh(now + 1, now), false);
   assert.equal(isRouteResultFresh(0, now), false);
 });

@@ -221,7 +221,8 @@ async function searchRoutes() {
   }
 }
 
-const ROUTE_RESULT_TTL_MS = globalThis.__ROUTE_TEST_RESULT_TTL_MS ?? 3 * 60 * 1000;
+// 已生成的路线保留 10 分钟，给用户足够的查看和比较时间；重新查询仍会刷新实时报价。
+const ROUTE_RESULT_TTL_MS = globalThis.__ROUTE_TEST_RESULT_TTL_MS ?? 10 * 60 * 1000;
 
 function isRouteResultFresh(fetchedAt, now = Date.now()) {
   const timestamp = Number(fetchedAt);
